@@ -591,7 +591,12 @@ function buildPnlTimeline() {
     if (t.action === 'BUY') { if (!queues[key]) queues[key] = []; queues[key].push(t) }
     else if (t.action === 'SELL') {
       const cost = (queues[key] || []).reduce((s, b) => s + b.size_usd, 0)
-      cumPnl += t.size_usd - cost
+      // resolved trades store size_usd = original buy cost, so compute true P&L from shares
+      let tradePnl
+      if (t.exit_reason === 'resolved_won') tradePnl = (t.shares || 0) - cost
+      else if (t.exit_reason === 'resolved_lost') tradePnl = -cost
+      else tradePnl = t.size_usd - cost
+      cumPnl += tradePnl
       points.push({ ts: t.timestamp, pnl: cumPnl })
       delete queues[key]
     }
@@ -737,7 +742,9 @@ function computeWinRate(tradeList) {
     if (t.action === 'BUY') { if (!queues[key]) queues[key] = []; queues[key].push(t) }
     else if (t.action === 'SELL') {
       const cost = (queues[key] || []).reduce((s, b) => s + b.size_usd, 0)
-      if (t.size_usd > cost) won++; total++; delete queues[key]
+      // resolved trades store size_usd = original buy cost, so use exit_reason to determine outcome
+      const isWin = t.exit_reason === 'resolved_won' || t.exit_reason === 'take_profit' || t.size_usd > cost
+      if (isWin) won++; total++; delete queues[key]
     }
   }
   return { won, total }
