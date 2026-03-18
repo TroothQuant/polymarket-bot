@@ -1,6 +1,7 @@
 """Portfolio management, risk checks, and Kelly criterion position sizing."""
 
 import logging
+import time
 from typing import Optional
 
 from config import BotConfig
@@ -35,6 +36,7 @@ class Portfolio:
             self.total_trades = 0
             self.is_halted = False
 
+        self._recently_closed: dict[str, float] = {}  # condition_id -> unix timestamp of close
         self.total_api_cost = 0.0
 
     def snapshot(self) -> PortfolioSnapshot:
@@ -123,6 +125,17 @@ class Portfolio:
             log.info(f"Risk BLOCK: already positioned in {signal.market.question[:40]}")
             return False
 
+        cooldown_secs = self.config.scan_interval_minutes * 60 * 2  # 2 cycle cooldown
+        closed_at = self._recently_closed.get(signal.market.condition_id)
+        if closed_at is not None:
+            elapsed = time.time() - closed_at
+            if elapsed < cooldown_secs:
+                remaining_min = (cooldown_secs - elapsed) / 60
+                log.info(f"Risk BLOCK: recently closed {signal.market.question[:40]}... ({remaining_min:.0f}min cooldown remaining)")
+                return False
+            else:
+                del self._recently_closed[signal.market.condition_id]
+
         if len(self.positions) >= self.config.max_concurrent_positions:
             log.info(f"Risk BLOCK: max positions ({self.config.max_concurrent_positions}) reached")
             return False
@@ -188,6 +201,7 @@ class Portfolio:
         self.bankroll += pos.size_usd + pnl
         self.total_realized_pnl += pnl
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
+        self._recently_closed[condition_id] = time.time()
         self.high_water_mark = max(self.high_water_mark, self.bankroll)
 
         log.info(f"Closed {pos.question[:40]}... PnL: ${pnl:+.2f}")
@@ -206,6 +220,7 @@ class Portfolio:
         self.total_realized_pnl += pnl
         self.total_trades += 1
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
+        self._recently_closed[condition_id] = time.time()
         self.high_water_mark = max(self.high_water_mark, self.bankroll)
 
         result = "WON" if won else "LOST"
@@ -358,6 +373,23 @@ class Portfolio:
                (output_tokens * OUTPUT_COST_PER_MTOK / 1_000_000)
         self.total_api_cost += cost
         self.bankroll -= cost
+
+    def remove_ghost_position(self, condition_id: str) -> None:
+        """Remove a phantom position that has no actual on-chain tokens.
+        Does NOT adjust bankroll — on-chain balance sync already reflects real USDC.
+        Records the cost basis as a realized loss.
+        """
+        pos = next((p for p in self.positions if p.condition_id == condition_id), None)
+        if pos is None:
+            return
+        pnl = -pos.size_usd
+        self.total_realized_pnl += pnl
+        self._recently_closed[condition_id] = time.time()
+        self.positions = [p for p in self.positions if p.condition_id != condition_id]
+        log.warning(
+            f"Ghost removed: {pos.question[:40]}... "
+            f"(${pos.size_usd:.2f} cost written off, PnL={pnl:+.2f})"
+        )
 
     def reset_daily(self) -> None:
         """Reset daily tracking. Call at the start of each new trading day."""

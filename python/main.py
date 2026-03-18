@@ -206,6 +206,39 @@ def main():
             prices = scanner.get_market_prices(token_ids)
             portfolio.update_position_prices(prices)
 
+            # Ghost check: verify actual on-chain balances (live trading only)
+            if isinstance(trader, LiveTrader) and portfolio.positions:
+                log.info(f"  Ghost check: verifying {len(portfolio.positions)} position balances...")
+                ghost_cids = trader.verify_positions(list(portfolio.positions))
+                for cid in ghost_cids:
+                    ghost_pos = next((p for p in portfolio.positions if p.condition_id == cid), None)
+                    if ghost_pos:
+                        ghost_loss = ghost_pos.size_usd
+                        log.warning(
+                            f"  GHOST: {ghost_pos.question[:50]}... "
+                            f"(0 tokens on-chain, writing off ${ghost_loss:.2f})"
+                        )
+                        if con:
+                            print(f"[{ts()}]   {YELLOW}GHOST: {ghost_pos.question[:50]}... (no tokens on-chain, ${ghost_loss:.2f} lost){RESET}")
+                        ghost_trade = Trade(
+                            trade_id=str(uuid4()),
+                            condition_id=ghost_pos.condition_id,
+                            question=ghost_pos.question,
+                            side=ghost_pos.side,
+                            action=TradeAction.SELL,
+                            price=0.0,
+                            size_usd=ghost_pos.size_usd,
+                            shares=ghost_pos.shares,
+                            timestamp=time.time(),
+                            is_paper=False,
+                            rationale="Ghost position: no on-chain tokens found",
+                            exit_reason="ghost",
+                        )
+                        portfolio.remove_ghost_position(cid)
+                        append_trade(ghost_trade, config.data_dir)
+                        save_snapshot(portfolio.snapshot(), config.data_dir)
+                        notifier.notify_ghost_removed(ghost_pos, ghost_loss, portfolio)
+
             # Tier 0: check for resolved markets
             # Include both unpriced tokens AND penny positions (CLOB often returns
             # residual sub-cent prices for resolved markets)

@@ -268,6 +268,45 @@ while (!cts.Token.IsCancellationRequested)
         var prices = await scanner.GetMarketPricesAsync(tokenIds, cts.Token);
         portfolio.UpdatePositionPrices(prices);
 
+        // Ghost check: verify actual on-chain balances (live trading only)
+        if (clobClient is not null && portfolio.Positions.Count > 0)
+        {
+            log.LogInformation("  Ghost check: verifying {Count} position balances...", portfolio.Positions.Count);
+            var positionsToCheck = portfolio.Positions.ToList();
+            foreach (var ghostPos in positionsToCheck)
+            {
+                var onChainBal = await clobClient.GetActualConditionalBalanceAsync(ghostPos.TokenId, cts.Token);
+                if (onChainBal is not null && onChainBal.Value < 0.1)
+                {
+                    log.LogWarning("  GHOST: {Question} (tracked={Tracked:F2} tokens, on-chain={OnChain:F2})",
+                        Truncate(ghostPos.Question, 50), ghostPos.Shares, onChainBal.Value);
+                    if (console_) Con($"  {YELLOW}GHOST: {Truncate(ghostPos.Question, 50)}... (no tokens, ${ghostPos.SizeUsd:F2} lost){RESET}");
+
+                    var ghostLoss = ghostPos.SizeUsd;
+                    var ghostPnl = portfolio.RemoveGhostPosition(ghostPos.ConditionId);
+
+                    var ghostTrade = new PolymarketBot.Models.Trade
+                    {
+                        TradeId = Guid.NewGuid().ToString(),
+                        ConditionId = ghostPos.ConditionId,
+                        Question = ghostPos.Question,
+                        Side = ghostPos.Side,
+                        Action = PolymarketBot.Models.TradeAction.SELL,
+                        Price = 0.0,
+                        SizeUsd = ghostLoss,
+                        Shares = ghostPos.Shares,
+                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                        IsPaper = false,
+                        Rationale = "Ghost position: no on-chain tokens found",
+                        ExitReason = "ghost",
+                    };
+                    PersistenceService.AppendTrade(ghostTrade, config.DataDir);
+                    PersistenceService.SaveSnapshot(portfolio.Snapshot(), config.DataDir);
+                    notifier.NotifyGhostRemoved(ghostPos, ghostLoss, portfolio);
+                }
+            }
+        }
+
         // Tier 0: check for resolved markets
         // Include both unpriced tokens AND penny positions (CLOB often returns
         // residual sub-cent prices for resolved markets)

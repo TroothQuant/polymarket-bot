@@ -257,6 +257,22 @@ class LiveTrader:
             log.warning(f"Conditional balance check failed: {e}")
             return None
 
+    def verify_positions(self, positions: list) -> list[str]:
+        """Check tracked positions against actual CLOB token balances.
+        Returns list of condition_ids with zero on-chain balance (ghost positions).
+        A position is considered a ghost if on-chain balance < 0.1 tokens.
+        """
+        ghosts = []
+        for pos in positions:
+            balance = self._get_actual_conditional_balance(pos.token_id)
+            if balance is not None and balance < 0.1:
+                log.warning(
+                    f"Ghost detected: {pos.question[:50]}... "
+                    f"(tracked={pos.shares:.2f} tokens, on-chain={balance:.2f})"
+                )
+                ghosts.append(pos.condition_id)
+        return ghosts
+
     def execute_sell(self, exit_signal: ExitSignal, portfolio: Portfolio) -> Optional[Trade]:
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL

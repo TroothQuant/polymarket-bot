@@ -21,6 +21,9 @@ public sealed class Portfolio
     public bool IsHalted { get; set; }
     public double TotalApiCost { get; private set; }
 
+    // condition_id -> DateTimeOffset of close (in-memory cooldown, not persisted)
+    private readonly Dictionary<string, DateTimeOffset> _recentlyClosed = new();
+
     public Portfolio(BotConfig config, ILogger<Portfolio> log, PortfolioSnapshot? snapshot = null)
     {
         _config = config;
@@ -150,6 +153,23 @@ public sealed class Portfolio
             return false;
         }
 
+        var cooldownSecs = _config.ScanIntervalMinutes * 60 * 2;  // 2-cycle cooldown
+        if (_recentlyClosed.TryGetValue(signal.Market.ConditionId, out var closedAt))
+        {
+            var elapsed = (DateTimeOffset.UtcNow - closedAt).TotalSeconds;
+            if (elapsed < cooldownSecs)
+            {
+                var remainingMin = (cooldownSecs - elapsed) / 60;
+                _log.LogInformation("Risk BLOCK: recently closed {Question} ({Remaining:F0}min cooldown remaining)",
+                    Truncate(signal.Market.Question, 40), remainingMin);
+                return false;
+            }
+            else
+            {
+                _recentlyClosed.Remove(signal.Market.ConditionId);
+            }
+        }
+
         if (Positions.Count >= _config.MaxConcurrentPositions)
         {
             _log.LogInformation("Risk BLOCK: max positions ({Max}) reached", _config.MaxConcurrentPositions);
@@ -231,6 +251,7 @@ public sealed class Portfolio
         Bankroll += pos.SizeUsd + pnl;
         TotalRealizedPnl += pnl;
         Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
+        _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
         HighWaterMark = Math.Max(HighWaterMark, Bankroll);
 
         _log.LogInformation("Closed {Question} PnL: ${Pnl:+0.00;-0.00}", Truncate(pos.Question, 40), pnl);
@@ -248,6 +269,7 @@ public sealed class Portfolio
         TotalRealizedPnl += pnl;
         TotalTrades++;
         Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
+        _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
         HighWaterMark = Math.Max(HighWaterMark, Bankroll);
 
         var result = won ? "WON" : "LOST";
@@ -424,6 +446,24 @@ public sealed class Portfolio
                    (outputTokens * OutputCostPerMTok / 1_000_000.0);
         TotalApiCost += cost;
         Bankroll -= cost;
+    }
+
+    /// <summary>
+    /// Remove a phantom position that has no actual on-chain tokens.
+    /// Does NOT adjust bankroll — balance sync already reflects real USDC.
+    /// Records the cost basis as realized loss.
+    /// </summary>
+    public double RemoveGhostPosition(string conditionId)
+    {
+        var pos = Positions.FirstOrDefault(p => p.ConditionId == conditionId);
+        if (pos is null) return 0.0;
+        var pnl = -pos.SizeUsd;
+        TotalRealizedPnl += pnl;
+        _recentlyClosed[conditionId] = DateTimeOffset.UtcNow;
+        Positions = Positions.Where(p => p.ConditionId != conditionId).ToList();
+        _log.LogWarning("Ghost removed: {Question} (${Loss:F2} written off, PnL={Pnl:+0.00;-0.00})",
+            Truncate(pos.Question, 40), pos.SizeUsd, pnl);
+        return pnl;
     }
 
     public void ResetDaily()
