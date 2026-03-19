@@ -567,16 +567,13 @@ public sealed class ClobApiClient
             var readBody = await readResp.Content.ReadAsStringAsync(ct);
 
             // Balance is in 6-decimal units (same as USDC), e.g. "7290000" = 7.29 tokens
-            _log.LogInformation("[COND-BALANCE-RAW] {Token}: {Body}", tokenId[..12], readBody[..Math.Min(readBody.Length, 300)]);
+            _log.LogDebug("[COND-BALANCE-RAW] {Token}: {Body}", tokenId[..12], readBody[..Math.Min(readBody.Length, 300)]);
             var doc = JsonDocument.Parse(readBody);
             if (doc.RootElement.TryGetProperty("balance", out var balEl) &&
                 long.TryParse(balEl.GetString(), out var balRaw))
             {
                 double balance = balRaw / 1_000_000.0;
-                string allowanceStr = doc.RootElement.TryGetProperty("allowance", out var allowEl)
-                    ? allowEl.GetString() ?? "missing"
-                    : "missing";
-                _log.LogInformation("[COND-BALANCE] {Token}: {Balance:F2} tokens, allowance={Allowance}", tokenId[..12], balance, allowanceStr);
+                _log.LogInformation("[COND-BALANCE] {Token}: {Balance:F2} tokens", tokenId[..12], balance);
                 return balance;
             }
 
