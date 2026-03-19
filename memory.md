@@ -10,87 +10,106 @@ Running notes between Claude Code sessions. Not a changelog — just current sta
 - **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`)
 - **Active implementation:** .NET (run via `run-bot.bat` or `dotnet run -- --console`)
 - **Dashboard:** `run-dashboard.bat`
+- **Multi-provider:** enabled — Anthropic + Gemini + OpenRouter all validating successfully
 
 ---
 
-## Key Features (all implemented, both Python and .NET)
+## AI Provider System
 
-### API Key Validation (startup)
+### Config structure (no legacy fields)
 
-Both implementations now validate the Anthropic API key at startup with a minimal 1-token call. HTTP 401 → log error + exit immediately. Network/rate-limit errors are warned and ignored (transient, don't block startup).
+Each provider has exactly three config fields — key, host, model:
 
-- Python: `estimator.validate_api_key()` — raises `anthropic.AuthenticationError` on 401
-- .NET: `estimator.ValidateApiKeyAsync()` — checks HTTP 401 status
+```json
+"ai_provider": "anthropic",
+"multi_provider": true,
+
+"anthropic_api_key": "sk-ant-...",
+"anthropic_api_host": "https://api.anthropic.com",
+"anthropic_model": "claude-sonnet-4-6",
+
+"gemini_api_key": "AIza...",
+"gemini_api_host": "https://generativelanguage.googleapis.com",
+"gemini_model": "gemini-2.0-flash",
+
+"openrouter_api_key": "sk-or-v1-...",
+"openrouter_api_host": "https://openrouter.ai",
+"openrouter_model": "anthropic/claude-sonnet-4-5",
+
+"openai_api_key": "",
+"openai_api_host": "https://api.openai.com",
+"openai_model": "gpt-4o",
+
+"azure_openai_api_key": "...",
+"azure_openai_endpoint": "https://...",
+"azure_openai_deployment": "",
+"azure_openai_api_version": "2024-02-01"
+```
+
+Removed: `claude_model`, `ai_model` (backward compat still reads them → populate `anthropic_model`).
+
+### Multi-provider scoring
+
+```
+conviction  = |provider_mean - market_price|   (disagreement with market)
+confidence  = 1 / (std_dev + 0.01)             (consistency of own calls)
+score       = conviction × confidence
+```
+
+Winner `⭐` is logged; final estimate = trimmed mean of per-provider means (equal weight). Bot only stops if ALL providers fail validation.
+
+### Validation at startup
+
+- Single mode: validates the one provider, exits on 401/403
+- Multi mode: validates all configured providers. Logs `✓`/`✗` per provider. Continues if at least one passes.
+
+---
+
+## Key Features (all implemented, both Python + .NET)
 
 ### Ghost Position Detection
 
-Each cycle (live trading only), tracked positions are verified against actual on-chain token balances via CLOB `/balance-allowance`. If on-chain balance < 0.1 tokens, the position is a ghost (failed order, partial fill, or cleanup issue). Written off immediately:
-
-- Trade logged with `exit_reason = "ghost"`, price = 0, loss = full cost basis
-- Email notification sent (purple color in HTML template)
-- `_recently_closed` cooldown entry added (prevents immediate re-entry)
-- No manual intervention needed
+Each cycle (live only): verify on-chain token balance via CLOB `/balance-allowance`. Balance < 0.1 → ghost: write off, `exit_reason="ghost"`, email notification (purple), cooldown entry.
 
 ### Position Cooldown
 
-After closing any position (stop-loss, take-profit, edge-gone, resolved, or ghost), the bot blocks re-entering that same market for `scan_interval_minutes × 2` seconds (2 cycles). Prevents flip-flopping on noisy signals.
+After closing any position (stop-loss / take-profit / edge-gone / resolved / ghost): block re-entry for `scan_interval_minutes × 2` seconds (2 cycles). In-memory only — resets on restart.
 
-- Tracked via `_recently_closed: dict[str, float]` (condition_id → close timestamp)
-- Not persisted — resets on restart (intentional)
+### Re-estimation During Review
 
-### Re-estimation During Position Review
-
-If a position's price moves more than `review_reestimate_threshold_pct` (default 10%) since entry, Claude is re-queried with a smaller `review_ensemble_size` ensemble (default 3) to refresh the fair value estimate. This updates `fair_estimate_at_entry` before edge-gone exit logic runs, so exits are based on current Claude opinion rather than stale entry estimate.
+If price moved > `review_reestimate_threshold_pct` (10%) since entry: re-run AI with `review_ensemble_size` (3) calls. Updates `fair_estimate_at_entry` before edge-gone logic.
 
 ### Confidence Filter
 
-After ensemble estimation, if std dev of Claude's estimates exceeds `max_estimate_std` (default 10%), the market is skipped with `SKIP (low confidence)`. Claude's ensemble is disagreeing too much to act on.
+Skip market if ensemble std dev > `max_estimate_std` (10%). Logs `SKIP (low confidence)`.
 
 ### Spread Filter
 
-Markets with bid-ask spread > `max_spread` (default 4¢) are skipped during scanning. Wide spreads indicate thin liquidity and poor fill quality.
+Skip markets with bid-ask spread > `max_spread` (4¢). Thin liquidity, poor fill quality.
+
+### CLOB Minimum Pre-check
+
+Pre-scan check uses `price + 0.02` (aggressive price after 2-tick BUY adjustment) so we don't call AI only to fail at order execution. Previously used raw market price which underestimated cost.
+
+### Tick Size Bug Fix
+
+`GetTickSizeAsync` (.NET) now handles both `String` and `Number` JSON value kinds from CLOB `/tick-size` API.
 
 ### HTML Emails
 
-All email notifications use HTML templates with color-coded event types. Each event type has a distinct color (green=buy, red=sell/loss, yellow=warning, purple=ghost, etc.).
-
----
-
-## Recent Fixes & Implementation Notes
-
-### SELL Order Bugs Fixed (.NET)
-
-- **Floor not Round**: `Math.Floor(shares * 100) / 100` — rounding can exceed on-chain balance by atomic units
-- **SELL price aggression**: subtract 2 ticks from midpoint (mirrors BUY's +2 ticks) for immediate taker fill
-- **Balance sync lag**: after SELL, CLOB balance API shows stale USDC — corrects next cycle. Expected.
-- **CLOB `/balance-allowance`**: returns `allowances` (plural), not `allowance`. Max uint256 = already approved.
-
-### Scan Threshold Fix
-
-Scan skip threshold = `max(MinTradeUsd, MaxPositionPct × bankroll)` — based on free cash only, not portfolio value. Prevents false blocks when most capital is locked in open positions.
-
-### Auto-claim (.NET only)
-
-When a WON position is detected, submits raw EIP-155 tx to Polygon calling `CTF.redeemPositions`. Config required: `ctf_address`, `usdc_address`, `polygon_rpc_url`. Controlled by `auto_claim` (default true).
-
-### SKIP Log Clarity
-
-`Program.cs` distinguishes two null-signal reasons:
-
-- Edge IS sufficient but position size is below CLOB minimum → logs "SKIP (bankroll < min)", console "TOO SMALL: need $X, have $Y"
-- Edge genuinely below threshold → logs "SKIP (no edge)"
+All notifications use HTML templates with color-coded event types. Events: started, trade, sell, topup_sell, ghost_removed, resolved, halted, daily_reset, error, stopped.
 
 ---
 
 ## Architecture Reminders
 
 - Config priority: CLI arg → env var → `polymarket_bot_config.json` → code default
-- `polymarket_bot_config.json` is gitignored (contains private key + API keys)
-- `polymarket_bot_config.json.example` — annotated template with recommended values
-- Kelly sizing caps at `min(KellyFraction × Kelly%, MaxPositionPct × portfolioValue)`, then checked against `bankroll`
-- Balance sync: on-chain USDC fetched every cycle and after each trade
-- `IsHalted` auto-clears on restart if `bankroll + TotalExposure() > $1`
+- `polymarket_bot_config.json` is gitignored; `polymarket_bot_config.json.example` is the template
 - Both Python and .NET must stay in sync — mirror every logic change
+- `IsHalted` auto-clears on restart if `bankroll + TotalExposure() > $1`
+- Scan skip threshold = `max(MinTradeUsd, MaxPositionPct × bankroll)` — free cash only
+- CLOB minimum = 5 tokens per order; TopupAndSell for tiny positions
+- Bankroll can be negative when capital is locked in positions — normal
 
 ---
 
@@ -98,26 +117,31 @@ When a WON position is detected, submits raw EIP-155 tx to Polygon calling `CTF.
 
 | Setting | Default |
 |---------|---------|
+| `ai_provider` | `anthropic` |
+| `multi_provider` | `false` |
+| `anthropic_model` | `claude-sonnet-4-6` |
+| `openai_model` | `gpt-4o` |
+| `gemini_model` | `gemini-2.0-flash` |
+| `openrouter_model` | (empty) |
 | `scan_interval_minutes` | 10 |
-| `markets_per_cycle` | 20 |
+| `markets_per_cycle` | 15 |
 | `min_liquidity` | 10000 |
-| `min_volume_24hr` | 500 |
-| `min_time_to_resolution_hours` | 48 |
+| `min_volume_24hr` | 1000 |
 | `max_spread` | 0.04 |
 | `ensemble_size` | 3 |
 | `max_estimate_std` | 0.10 |
-| `min_edge` | 0.10 |
-| `kelly_fraction` | 0.20 |
+| `min_edge` | 0.12 |
+| `kelly_fraction` | 0.15 |
 | `min_trade_usd` | 0.5 |
 | `max_position_pct` | 15% |
 | `max_total_exposure_pct` | 100% |
 | `max_category_exposure_pct` | 80% |
 | `daily_stop_loss_pct` | 20% |
 | `max_drawdown_pct` | 50% |
-| `max_concurrent_positions` | 10 |
-| `position_stop_loss_pct` | 25% |
+| `max_concurrent_positions` | 8 |
+| `position_stop_loss_pct` | 20% |
 | `take_profit_price` | 0.95 |
 | `review_reestimate_threshold_pct` | 0.10 |
 | `review_ensemble_size` | 3 |
-| `auto_claim` | true |
+| `auto_claim` | true (.NET only) |
 | `polygon_rpc_url` | https://polygon-rpc.com |

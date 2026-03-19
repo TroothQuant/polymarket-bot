@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Polymarket trading bot that uses Claude ensemble estimation to find and trade mispriced binary prediction markets. Every cycle it validates credentials, checks for ghost positions, reviews open positions (with re-estimation and cooldown logic), scans markets, estimates fair probabilities via multiple Claude calls (trimmed mean + confidence filter), sizes positions with fractional Kelly criterion, and executes. The agent pays for its own API inference from its bankroll — if portfolio value drops below $1, it stops.
+Polymarket trading bot that estimates fair market probabilities via an AI ensemble (Anthropic, Gemini, OpenAI, OpenRouter, or Azure OpenAI), finds mispricing, and executes trades on Polymarket with Kelly criterion sizing. The agent pays for its own inference from its bankroll.
 
 Two implementations: **Python** (`python/`) and **.NET 8** (`dotnet/PolymarketBot/`). Both share the same logic, config, and data formats.
 
@@ -12,16 +12,17 @@ Two implementations: **Python** (`python/`) and **.NET 8** (`dotnet/PolymarketBo
 
 ### Config file (primary)
 
-All settings live in **`polymarket_bot_config.json`** at the project root (not tracked by git — contains secrets). Copy from the example or create manually:
+All settings live in **`polymarket_bot_config.json`** at the project root (gitignored — contains secrets). See `polymarket_bot_config.json.example` for the full annotated template.
+
+Minimum for paper trading:
 
 ```json
 {
   "anthropic_api_key": "sk-ant-...",
   "anthropic_api_host": "https://api.anthropic.com",
+  "anthropic_model": "claude-sonnet-4-6",
   "gamma_api_host": "https://gamma-api.polymarket.com",
-  "clob_host": "https://clob.polymarket.com",
-  "live_trading": false,
-  "initial_bankroll": 10000
+  "clob_host": "https://clob.polymarket.com"
 }
 ```
 
@@ -34,10 +35,8 @@ cd python
 pip install -r requirements.txt
 python main.py           # paper trading
 python main.py --verbose # debug logging
-python main.py --console # human-readable console output
+python main.py --console # human-readable CLI prints
 ```
-
-Python 3.10+ required. Dependencies: `requests`, `anthropic`, `py-clob-client` (live trading only).
 
 ### .NET
 
@@ -45,10 +44,8 @@ Python 3.10+ required. Dependencies: `requests`, `anthropic`, `py-clob-client` (
 cd dotnet/PolymarketBot
 dotnet run               # paper trading
 dotnet run -- --verbose  # debug logging
-dotnet run -- --console  # human-readable console output
+dotnet run -- --console  # human-readable CLI prints
 ```
-
-.NET 8 required. NuGet packages: `Microsoft.Extensions.Logging`, `Nethereum.Signer` (EIP-712/ECDSA for live trading).
 
 ### Windows
 
@@ -71,88 +68,85 @@ No test suite or linter configured.
 
 ```text
 python/
-  main.py            – Orchestration loop: scan → estimate → signal → risk check → execute → save
-  config.py          – BotConfig dataclass; reads polymarket_bot_config.json then env vars
-  notifier.py        – Email notifications (smtplib); all events: trade, sell, resolved, halted, etc.
-  models.py          – Domain dataclasses: MarketInfo, Estimate, Signal, Position, Trade, ExitSignal, TopupCandidate, PortfolioSnapshot
-  market_scanner.py  – MarketScanner: Gamma API pagination, market parsing/filtering, CLOB price quotes, batch price fetch
-  estimator.py       – Estimator: N independent Claude calls per market, trimmed mean, JSON parsing
-  portfolio.py       – Portfolio: bankroll, positions, Kelly sizing, risk limits, position review & exit signals, API cost tracking
-  trader.py          – PaperTrader (simulated) + LiveTrader (py-clob-client GTC orders, buy & sell via CLOB)
-  persistence.py     – JSON save/load for PortfolioSnapshot + JSONL append for trade log
-  logger_setup.py    – Dual logging: colored console + JSON lines file (data/bot.log)
-  requirements.txt   – Python dependencies
+  main.py            – Orchestration loop
+  config.py          – BotConfig — per-provider fields, backward compat for claude_model/ai_model
+  estimator.py       – Multi-provider AI ensemble: Anthropic/OpenAI/Gemini/OpenRouter/Azure
+  notifier.py        – HTML email notifications
+  models.py          – Domain dataclasses
+  market_scanner.py  – Gamma API pagination, market filtering, CLOB price quotes
+  portfolio.py       – Kelly sizing, risk limits, cooldown, ghost removal, position review
+  trader.py          – PaperTrader + LiveTrader + ghost detection
+  persistence.py     – Atomic JSON portfolio + JSONL trade log
+  logger_setup.py    – Colored console + JSON lines file logger
+  requirements.txt   – Python dependencies (requests, anthropic, py-clob-client)
 ```
 
 ### .NET (`dotnet/PolymarketBot/`)
 
 ```text
 dotnet/PolymarketBot/
-  Program.cs               – Async orchestration loop with CancellationToken
-  BotConfig.cs             – Config from polymarket_bot_config.json then env vars (same keys as Python)
-  Models/                  – Enums, MarketInfo, Estimate, Signal, Position, Trade, TopupCandidate, PortfolioSnapshot
+  Program.cs               – Async orchestration loop
+  BotConfig.cs             – Config — per-provider fields, backward compat
+  Models/                  – Enums, domain models
   Services/
-    MarketScanner.cs       – Gamma API with HttpClient, pagination, filtering, batch price fetch
-    Estimator.cs           – Claude ensemble via Anthropic REST API (HttpClient); 429/529 retry with 10/20/40s backoff
-    Portfolio.cs           – Kelly sizing, 5-layer risk, position review & exit signals, API cost tracking
-    Notifier.cs            – Email notifications (System.Net.Mail); mirrors python/notifier.py
-    ClobApiClient.cs       – CLOB API auth (EIP-712 signing, HMAC, API key derivation), buy & sell orders, auto-claim (CTF.redeemPositions on Polygon)
-    ITrader.cs             – Trader interface (ExecuteAsync + ExecuteSellAsync + ExecuteTopupAndSellAsync)
-    PaperTrader.cs         – Simulated execution (buy & sell)
-    LiveTrader.cs          – Live CLOB API execution with GTC polling (buy & sell)
-    PersistenceService.cs  – Atomic JSON save + JSONL trade log (System.Text.Json)
-    JsonFileLoggerProvider.cs – JSON lines file logger (matches Python's JsonFormatter)
+    Estimator.cs           – Multi-provider AI ensemble (EstimateAsync, EstimateMultiAsync, ValidateApiKeyAsync)
+    MarketScanner.cs       – Gamma API + spread filter
+    Portfolio.cs           – Kelly sizing, risk checks, cooldown, ghost removal
+    Notifier.cs            – HTML email notifications
+    ClobApiClient.cs       – EIP-712 + HMAC CLOB auth, orders, auto-claim
+    ITrader.cs / LiveTrader.cs / PaperTrader.cs
+    PersistenceService.cs  – Atomic JSON + JSONL
+    JsonFileLoggerProvider.cs
 ```
 
-**Data flow per cycle (both implementations):**
+**Data flow per cycle:**
 
-1. **Balance sync** — fetch on-chain USDC every cycle, sync bankroll in both directions
-2. **Ghost check** — verify tracked positions have on-chain tokens; write off strays (`exit_reason="ghost"`)
-3. **Position review** — fetch midpoint prices, check exit rules (stop-loss/take-profit/edge-gone), optionally re-estimate if price moved >10%, execute SELLs, top-up-and-sell tiny positions
-4. `MarketScanner.Scan()` → list of `MarketInfo` (filtered by liquidity, volume, spread, time-to-resolution)
-5. `Estimator.Estimate()` → `Estimate` per market (ensemble of N Claude calls, trimmed mean, confidence filter)
-6. `Portfolio.GenerateSignal()` → `Signal` when edge > `min_edge` (10% default)
-7. `Portfolio.CheckRisk()` → validates 5-layer risk limits + cooldown (2 cycles after any close)
-8. `PaperTrader/LiveTrader.Execute()` → `Trade` record + `Position` opened
-9. `Persistence` → save snapshot + append trade to log
+1. **Balance sync** — fetch on-chain USDC, sync bankroll
+2. **Ghost check** — verify on-chain token balances; write off positions with < 0.1 tokens
+3. **Position review** — fetch prices, run exits (stop-loss/take-profit/edge-gone), optionally re-estimate, topup-and-sell tiny positions
+4. `MarketScanner.Scan()` → filtered `MarketInfo` list (liquidity, volume, spread, price, time)
+5. `Estimator.Estimate()` → `Estimate` (single or multi-provider ensemble, trimmed mean, confidence filter)
+6. `Portfolio.GenerateSignal()` → `Signal` when edge > `min_edge`
+7. `Portfolio.CheckRisk()` → 5-layer risk + cooldown
+8. `PaperTrader/LiveTrader.Execute()` → `Trade` + `Position`
+9. `Persistence` → save snapshot + append trade
 
 **External APIs:**
-- Gamma API (`gamma-api.polymarket.com/events`) — market discovery with pagination
-- CLOB API (`clob.polymarket.com`) — price quotes + live order execution
-- Anthropic API — Claude ensemble estimation (agent pays from bankroll)
+- Gamma API (`gamma-api.polymarket.com/events`) — market discovery
+- CLOB API (`clob.polymarket.com`) — price quotes + live orders
+- Anthropic / OpenAI / Gemini / OpenRouter / Azure API — AI estimation
 
 ## Key Design Decisions
 
-- **Binary markets only** — filters out non-binary outcomes in market parsing
-- **Ensemble estimation** — N independent Claude calls at temperature 0.7, trimmed mean reduces variance
-- **Confidence filter** — if ensemble std dev > `max_estimate_std` (default 10%), market is skipped: `SKIP (low confidence)`
-- **Spread filter** — markets with bid-ask spread > `max_spread` (default 4¢) are skipped: thin liquidity, poor fills
-- **Estimator prompt** includes current market price as a Bayesian prior — Claude is told to treat market consensus as an anchor and only deviate with strong specific reasoning
-- **API key validation at startup** — both implementations make a 1-token test call to Anthropic before starting. HTTP 401 → exit immediately with clear error. Network errors → warn and continue (transient).
-- **Ghost position detection** — each cycle (live only), actual on-chain conditional token balance is checked via CLOB `/balance-allowance`. Balance < 0.1 → ghost: write off with `exit_reason="ghost"`, email notification, cooldown entry.
-- **Position cooldown** — after any close (stop-loss, take-profit, edge-gone, resolved, ghost), blocks re-entry for 2 scan cycles. Tracked in `_recently_closed` dict. Not persisted — resets on restart.
-- **Re-estimation during review** — if a position's price moves > `review_reestimate_threshold_pct` (10%) since entry, Claude is re-queried with `review_ensemble_size` (3) calls. Updates `fair_estimate_at_entry` before edge-gone logic runs.
-- **Keyword-based categorization** (`CATEGORY_KEYWORDS` in scanner) — used for per-category exposure limits
-- **Gamma API returns JSON-encoded strings** inside JSON for `outcomes`, `outcomePrices`, and `clobTokenIds` — parsing handles both string and list forms
-- **Risk is layered:** per-position (15%), per-category (80%), total exposure (100%), daily stop-loss (20%), max drawdown (50%), plus cooldown
-- **Portfolio value** for stop-loss/drawdown = bankroll + total open position value (deployed capital isn't a loss)
-- **Config file** `polymarket_bot_config.json` at project root (not tracked by git). See `polymarket_bot_config.json.example` for annotated template. `CONFIG_FILE` env var overrides path. Priority: CLI arg → env var → config file → code default
-- **HTML email notifications** — all events use color-coded HTML templates. Events: started, trade, sell, topup+sell, ghost_removed, resolved, halted, daily_reset, error, stopped. Errors silently swallowed.
-- **CLI args** override env vars/config for risk params: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`
-- **Agent pays for inference** — API token costs are deducted from bankroll each cycle
-- **Atomic persistence** — portfolio.json written via tmp+rename to avoid corruption on crash
+- **Multi-provider AI estimation** — `multi_provider: true` queries ALL configured providers simultaneously. Each provider gets `ceil(ensemble_size / num_providers)` calls. Scored by `conviction × confidence` (conviction = |estimate - market_price|, confidence = 1/(std_dev + 0.01)). Final estimate = trimmed mean of per-provider means. Bot stops only if ALL providers fail validation.
+- **Per-provider model fields** — `anthropic_model`, `openai_model`, `gemini_model`, `openrouter_model` are fully independent. No fallback between providers. Defaults: Anthropic=`claude-sonnet-4-6`, OpenAI=`gpt-4o`, Gemini=`gemini-2.0-flash`.
+- **No legacy `claude_model`/`ai_model` fields** — removed from codebase. JSON values are still read for backward compat (populate `anthropic_model`), but don't create new configs with them.
+- **API key validation at startup** — both implementations make a minimal 1-token call per configured provider. Multi mode logs `✓`/`✗` per provider; continues if at least one passes.
+- **Binary markets only** — filters out non-binary outcomes
+- **Estimator system prompt** shows current market price as a Bayesian prior — Claude is told to treat market consensus as an anchor
+- **Anthropic TextBlock safety** — `response.content[0]` can be ThinkingBlock/ToolUseBlock etc. Always use `next(b for b in response.content if hasattr(b, "text"), None)` not `.content[0].text`
+- **Ghost position detection** — each cycle (live only), actual on-chain conditional token balance checked. < 0.1 tokens = ghost: written off immediately with `exit_reason="ghost"`, email notification
+- **Position cooldown** — after any close (stop-loss/take-profit/edge-gone/resolved/ghost), blocks re-entry for 2 scan cycles. In-memory, resets on restart. Prevents flip-flopping.
+- **Re-estimation during review** — if price moved > `review_reestimate_threshold_pct` (10%), re-run AI with `review_ensemble_size` calls to refresh `fair_estimate_at_entry`
+- **CLOB minimum pre-check** uses `price + 0.02` (aggressive price after 2-tick BUY adjustment), not raw market price. Prevents calling AI only to fail at order execution.
+- **Tick size** — CLOB `/tick-size` API may return `Number` or `String` JSON. Always handle both value kinds.
+- **Confidence filter** — if ensemble std dev > `max_estimate_std` (10%), skip market: `SKIP (low confidence)`
+- **Spread filter** — `max_spread = 0.04`: skip markets with wide bid-ask spreads
+- **Gamma API JSON quirk** — `outcomes`, `outcomePrices`, `clobTokenIds` can be JSON-encoded strings or actual arrays
+- **Risk is layered** — 5 layers: per-position (15%), per-category (80%), total exposure (100%), daily stop-loss (20%), max drawdown (50%). Plus cooldown (6th layer).
+- **Config file** `polymarket_bot_config.json` at project root. `CONFIG_FILE` env var overrides path. Priority: CLI arg → env var → config file → code default
+- **HTML email notifications** — all events use color-coded HTML templates. Events: started, trade, sell, topup+sell, ghost_removed, resolved, halted, daily_reset, error, stopped
+- **CLI args** override env vars/config for risk params
+- **Agent pays for inference** — API token costs deducted each cycle
+- **Atomic persistence** — portfolio.json written via tmp+rename
 - **Polygon chain** (chain ID 137) for Polymarket settlement
-- **Live trading** uses GTC (Good-Till-Cancelled) limit orders. BUY price = midpoint + 2 ticks (crosses spread for immediate taker fills). SELL price = midpoint − 2 ticks (symmetric aggression). Poll 5×3s = 15s for MATCHED status, cancel if unfilled.
-- **Position review** each cycle: stop-loss (>25% drop), take-profit (price≥0.95), edge-gone (market past fair estimate). Penny positions (<$0.01) skipped — unsellable on CLOB.
-- **Top-up-and-sell** for tiny positions (<5 tokens) with exit signals: BUY 5 tokens (CLOB minimum) then SELL all. Skipped if bankroll < topup cost.
-- **SELL orders** use Side=1, makerAmount=tokens, takerAmount=USDC (reversed from BUY). Minimum 5 tokens enforced.
-- **Agent survival**: estimation loop stops when bankroll < $0.30 (API reserve guard) — bot keeps running for position review. Agent truly "dead" only when `bankroll + TotalExposure() < $1`. `IsHalted` auto-cleared on restart if portfolio value is healthy.
-- **Scan skip threshold** = `max(MinTradeUsd, MaxPositionPct × bankroll)` — based on free cash only, not portfolio value.
-- **.NET version** uses direct HttpClient calls to Anthropic REST API (no SDK dependency)
-- **.NET CLOB auth** implements EIP-712 signing (ClobAuth struct for L1, Order struct for orders) + HMAC-SHA256 for L2, using Nethereum.Signer for Keccak/ECDSA
-- **Auto-claim** (.NET only) — when a WON position is detected, `ClobApiClient.RedeemWinningPositionAsync()` submits a raw EIP-155 transaction to Polygon calling `CTF.redeemPositions`. ABI-encoded manually (196 bytes). Requires `ctf_address`, `usdc_address`, `polygon_rpc_url` in config. Controlled by `auto_claim` (default `true`).
-- **Anthropic 429/529 retry** — `Estimator.SingleCallAsync` retries up to 3 times with backoff 10s → 20s → 40s. After max retries returns null (market skipped).
-- **SKIP log clarity** — distinguishes "SKIP (bankroll < min)" (edge sufficient, size below CLOB minimum) vs "SKIP (no edge)" (edge below threshold). Console shows "TOO SMALL: need $X, have $Y".
+- **Live trading** uses GTC limit orders. BUY = midpoint + 2 ticks (taker aggression). SELL = midpoint − 2 ticks. Poll 5×3s for MATCHED status, cancel if unfilled.
+- **Top-up-and-sell** for tiny positions (< 5 tokens): buy 5 tokens, then sell all
+- **Agent survival** — estimation stops at `bankroll < $0.30`; scan skips when bankroll too low for minimum position; truly halts at `bankroll + total_exposure < $1`. `IsHalted` auto-clears on restart if portfolio healthy.
+- **Scan skip threshold** = `max(MinTradeUsd, MaxPositionPct × bankroll)` — free cash only
+- **.NET Estimator** uses raw HttpClient to provider REST APIs (no SDK for non-Anthropic providers). Python uses `anthropic` SDK for Anthropic, `requests` for others.
+- **.NET CLOB auth** implements EIP-712 signing + HMAC-SHA256 using Nethereum.Signer
+- **Auto-claim** (.NET only) — WON position detected → `ClobApiClient.RedeemWinningPositionAsync()` submits raw EIP-155 tx to Polygon
 
 ## Dashboard (`dashboard/`)
 
@@ -170,31 +164,39 @@ cd dashboard && npm install && npm start
 
 ```text
 dashboard/
-  main.js       Main process: IPC handlers, file watchers, bot process management
-  preload.js    Context bridge (exposes safe API to renderer)
-  renderer.js   All UI logic: stats, tables, charts, log, config, resize handles
-  index.html    UI shell: stats row, positions table, trade table, charts, log, modals
-  styles.css    Dark theme CSS
+  main.js       Main process: IPC handlers, file watchers, bot process management, fetch-ai-models handler
+  preload.js    Context bridge (exposes api.* including fetchAiModels)
+  renderer.js   All UI logic: stats, tables, charts, log, per-provider config sections
+  index.html    UI shell
+  styles.css    Dark/light theme
   package.json  electron ^33.0.0 devDependency
 ```
 
+### Config Editor — Provider Sections
+
+The config form is organized into per-provider sections: AI PROVIDER, ANTHROPIC, OPENAI, GEMINI, OPENROUTER, AZURE OPENAI. Each provider section has its own API Key, API Host, and Model field.
+
+Model fields use `type: 'model-select'` with a **↺ Load** button. The `loadFrom` property (not `providers`) tells the button which provider API to call for model loading. The `providers` property on AI PROVIDER section fields is for show/hide logic only.
+
+The `fetch-ai-models` IPC handler in `main.js` calls each provider's live model API using Node `fetch()`.
+
 ### Key Patterns
 
-- **Bot spawn**: Use `shell: false` when running a direct `.exe` path (avoids Windows CMD splitting paths at spaces). Use `shell: true` for `python` / `dotnet run` (PATH-based commands).
-- **Log isolation**: `logClearedAt = Date.now()` at dashboard load → hides all pre-existing log entries. `confirmStart()` resets `logClearedAt = 0` + `logs = []` for a fresh session view.
-- **Log file rotation**: Old `bot.log` renamed to `bot-TIMESTAMP.log` before each new bot start (in `main.js` start-bot handler).
-- **Timestamp normalization**: `parseTs(ts)` helper strips extra fractional-second digits before `new Date()` — handles .NET's 7-decimal `ToString("o")` format reliably.
-- **Charts**: Initialized once with `animation: false`; updated with `chart.update('none')` — prevents jumping/flickering on 8-second refresh.
-- **FileShare fix (.NET)**: `bot.log` must be opened with `FileShare.ReadWrite` in `Program.cs` so both the bot and dashboard can access it simultaneously.
-- **Stale exe**: After source changes to .NET, rebuild with `dotnet build -c Debug` from `dotnet/PolymarketBot/`. The dashboard prefers the compiled exe over `dotnet run` to avoid recompile locking.
-- **File watcher**: `setupFileWatcher()` uses 300ms debounce per file + `name === null` fallback (Windows sometimes omits filename in `fs.watch` callback).
-- **`t` variable bug**: `refresh()` must destructure as `[p, tr, l]` not `[p, t, l]` — `t` is the global translation function; shadowing it causes TypeError on every refresh call.
-- **i18n system**: `TRANS = { ru: {}, en: {} }` + `t(key, ...args)` helper. `applyLang()` updates `[data-i18n]` elements via first text node (not `innerHTML`) to preserve child elements (tip icons, sort-ind spans). `currentLang` stored in `localStorage.lang`.
-- **Tooltips**: `.tip-icon` spans with `data-tip-key`. `applyTips()` sets `data-tip` from `TRANS[lang].tips`. `initTooltips()` creates one `.tooltip-popup` div in `<body>` using `position: fixed` + `getBoundingClientRect()` — avoids `overflow: hidden` clipping that breaks CSS `::after` tooltips.
-- **Theme**: `body.light` CSS class toggles light theme. `initTheme()` reads/writes `localStorage.theme`.
+- **Bot spawn**: `shell: false` for direct `.exe` path. `shell: true` for `python`/`dotnet run`.
+- **Log isolation**: `logClearedAt = Date.now()` on load hides pre-existing entries.
+- **Log rotation**: `bot.log` → `bot-TIMESTAMP.log` before each new bot start.
+- **Timestamp normalization**: `parseTs(ts)` handles .NET's 7-decimal `ToString("o")`.
+- **Charts**: `animation: false` init; `chart.update('none')` — no flicker.
+- **FileShare (.NET)**: `new FileStream(..., FileShare.ReadWrite)` for concurrent dashboard + bot access.
+- **Stale exe**: after .NET changes, `dotnet build -c Debug` from `dotnet/PolymarketBot/`.
+- **File watcher**: 300ms debounce + `name === null` fallback.
+- **`t` variable shadowing**: `refresh()` must use `[p, tr, l]` not `[p, t, l]`.
+- **i18n**: `TRANS = { ru:{}, en:{} }` + `t(key,...args)`. Text-node update in `applyLang()`.
+- **Tooltips**: single `position:fixed` div in `<body>` — avoids `overflow:hidden` clipping.
+- **Theme**: `body.light` CSS class. `localStorage.theme`.
 
 ### IPC Channels
 
-`read-portfolio`, `read-trades`, `read-logs`, `read-config`, `write-config`, `get-data-dir`, `set-data-dir`, `browse-data-dir`, `bot-status`, `start-bot`, `stop-bot`, `save-file`, `open-logs-dir`
+`read-portfolio`, `read-trades`, `read-logs`, `read-config`, `write-config`, `get-data-dir`, `set-data-dir`, `browse-data-dir`, `bot-status`, `start-bot`, `stop-bot`, `save-file`, `open-logs-dir`, `fetch-ai-models`
 
 Push events (main → renderer): `file-changed`, `bot-output`, `bot-stopped`
