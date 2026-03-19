@@ -144,6 +144,80 @@ function setupIPC() {
     return true
   })
 
+  // ── AI model listing ────────────────────────────────────────────────
+  ipcMain.handle('fetch-ai-models', async (_, { provider, apiKey, host, deployment, apiVersion }) => {
+    try {
+      if (provider === 'anthropic') {
+        return { models: [
+          { id: 'claude-opus-4-6',             name: 'Claude Opus 4.6' },
+          { id: 'claude-sonnet-4-6',           name: 'Claude Sonnet 4.6' },
+          { id: 'claude-sonnet-4-20250514',    name: 'Claude Sonnet 4 (2025-05-14)' },
+          { id: 'claude-haiku-4-5-20251001',   name: 'Claude Haiku 4.5' },
+          { id: 'claude-3-7-sonnet-20250219',  name: 'Claude 3.7 Sonnet' },
+          { id: 'claude-3-5-sonnet-20241022',  name: 'Claude 3.5 Sonnet' },
+          { id: 'claude-3-5-haiku-20241022',   name: 'Claude 3.5 Haiku' },
+          { id: 'claude-3-opus-20240229',      name: 'Claude 3 Opus' },
+        ]}
+      }
+
+      if (provider === 'openai') {
+        const baseHost = (host || 'https://api.openai.com').replace(/\/$/, '')
+        const resp = await fetch(`${baseHost}/v1/models`, {
+          headers: { Authorization: `Bearer ${apiKey}` }
+        })
+        if (!resp.ok) return { error: `HTTP ${resp.status}` }
+        const data = await resp.json()
+        const models = (data.data || [])
+          .filter(m => /^(gpt|o1|o3|o4)/.test(m.id))
+          .sort((a, b) => (b.created || 0) - (a.created || 0))
+          .map(m => ({ id: m.id, name: m.id }))
+        return { models }
+      }
+
+      if (provider === 'gemini') {
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`
+        )
+        if (!resp.ok) return { error: `HTTP ${resp.status}` }
+        const data = await resp.json()
+        const models = (data.models || [])
+          .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+          .map(m => ({ id: m.name.replace('models/', ''), name: m.displayName || m.name.replace('models/', '') }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        return { models }
+      }
+
+      if (provider === 'openrouter') {
+        const resp = await fetch('https://openrouter.ai/api/v1/models', {
+          headers: { Authorization: `Bearer ${apiKey}` }
+        })
+        if (!resp.ok) return { error: `HTTP ${resp.status}` }
+        const data = await resp.json()
+        const models = (data.data || [])
+          .map(m => ({ id: m.id, name: m.name || m.id }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        return { models }
+      }
+
+      if (provider === 'azure_openai') {
+        const endpoint = (host || '').replace(/\/$/, '')
+        const version = apiVersion || '2024-02-01'
+        const resp = await fetch(`${endpoint}/openai/deployments?api-version=${version}`, {
+          headers: { 'api-key': apiKey }
+        })
+        if (!resp.ok) return { error: `HTTP ${resp.status}` }
+        const data = await resp.json()
+        const models = (data.value || [])
+          .map(d => ({ id: d.id, name: `${d.id} (${d.properties?.model?.name || 'deployment'})` }))
+        return { models }
+      }
+
+      return { error: `Unknown provider: ${provider}` }
+    } catch (e) {
+      return { error: e.message }
+    }
+  })
+
   // ── Bot process ───────────────────────────────────────────────────────
   ipcMain.handle('bot-status', () => ({
     running: botProcess !== null && !botProcess.killed,

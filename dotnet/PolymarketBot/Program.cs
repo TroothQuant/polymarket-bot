@@ -113,9 +113,17 @@ if (console_)
     Console.WriteLine($"{new string('=', 60)}\n");
 }
 
-if (string.IsNullOrEmpty(config.AnthropicApiKey))
+var _providerKey = config.AiProvider.ToLowerInvariant() switch
 {
-    log.LogError("ANTHROPIC_API_KEY not set");
+    "openai"       => config.OpenAiApiKey,
+    "gemini"       => config.GeminiApiKey,
+    "openrouter"   => config.OpenRouterApiKey,
+    "azure_openai" => config.AzureOpenAiApiKey,
+    _              => config.AnthropicApiKey,
+};
+if (string.IsNullOrEmpty(_providerKey))
+{
+    log.LogError("API key for provider '{Provider}' is not set in config", config.AiProvider);
     return 1;
 }
 

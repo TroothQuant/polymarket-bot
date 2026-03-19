@@ -42,8 +42,12 @@ class BotConfig:
     markets_per_cycle: int = 15  # Cap on markets to evaluate per cycle
     max_spread: float = 0.04  # Skip markets with bid-ask spread wider than 4 cents
 
+    # AI provider
+    ai_provider: str = "anthropic"   # anthropic | openai | gemini | openrouter | azure_openai
+    ai_model: str = ""               # if empty, falls back to claude_model (backward compat)
+
     # Estimation
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-20250514"   # used when ai_provider=anthropic and ai_model not set
     ensemble_size: int = 3
     ensemble_temperature: float = 0.7
     max_estimate_tokens: int = 1024
@@ -73,8 +77,16 @@ class BotConfig:
     # Capital
     initial_bankroll: float = 10000.0
 
-    # API keys
+    # API keys — shared provider keys
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    openai_api_host: str = "https://api.openai.com"   # override for OpenAI-compatible APIs
+    gemini_api_key: str = ""
+    openrouter_api_key: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_endpoint: str = ""          # e.g. https://my-resource.openai.azure.com
+    azure_openai_deployment: str = ""        # deployment / model name
+    azure_openai_api_version: str = "2024-02-01"
     polymarket_private_key: str = ""
     polymarket_funder_address: str = ""
     polymarket_chain_id: int = 137
@@ -127,6 +139,8 @@ class BotConfig:
             return default
 
         return cls(
+            ai_provider=get("ai_provider", "anthropic"),
+            ai_model=get("ai_model", ""),
             live_trading=get("live_trading", False),
             scan_interval_minutes=get("scan_interval_minutes", 10),
             min_liquidity=get("min_liquidity", 10000.0),
@@ -156,6 +170,14 @@ class BotConfig:
             max_concurrent_positions=get("max_concurrent_positions", 8),
             initial_bankroll=get("initial_bankroll", 10000.0),
             anthropic_api_key=get("anthropic_api_key", ""),
+            openai_api_key=get("openai_api_key", ""),
+            openai_api_host=get("openai_api_host", "https://api.openai.com"),
+            gemini_api_key=get("gemini_api_key", ""),
+            openrouter_api_key=get("openrouter_api_key", ""),
+            azure_openai_api_key=get("azure_openai_api_key", ""),
+            azure_openai_endpoint=get("azure_openai_endpoint", ""),
+            azure_openai_deployment=get("azure_openai_deployment", ""),
+            azure_openai_api_version=get("azure_openai_api_version", "2024-02-01"),
             polymarket_private_key=get("polymarket_private_key", ""),
             polymarket_funder_address=get("polymarket_funder_address", ""),
             polymarket_chain_id=get("polymarket_chain_id", 137),

@@ -807,8 +807,21 @@ const CONFIG_SCHEMA = [
     { key: 'live_trading',     label: 'Live Trading',     ru: 'Боевой режим',     type: 'bool', danger: true },
     { key: 'initial_bankroll', label: 'Initial Bankroll', ru: 'Начальный баланс', type: 'number', step: 1 },
   ]},
+  { section: 'AI PROVIDER', ru: 'ИИ ПРОВАЙДЕР', fields: [
+    { key: 'ai_provider', label: 'Provider', ru: 'Провайдер', type: 'provider-select' },
+    { key: 'ai_model',    label: 'Model',    ru: 'Модель',    type: 'model-select' },
+    { key: 'anthropic_api_key',          label: 'Anthropic API Key',   ru: 'Ключ Anthropic',   type: 'password', providers: ['anthropic'] },
+    { key: 'anthropic_api_host',         label: 'Anthropic API Host',  ru: 'Хост Anthropic',   type: 'text',     providers: ['anthropic'] },
+    { key: 'openai_api_key',             label: 'OpenAI API Key',      ru: 'Ключ OpenAI',      type: 'password', providers: ['openai'] },
+    { key: 'openai_api_host',            label: 'OpenAI API Host',     ru: 'Хост OpenAI',      type: 'text',     providers: ['openai'] },
+    { key: 'gemini_api_key',             label: 'Gemini API Key',      ru: 'Ключ Gemini',      type: 'password', providers: ['gemini'] },
+    { key: 'openrouter_api_key',         label: 'OpenRouter API Key',  ru: 'Ключ OpenRouter',  type: 'password', providers: ['openrouter'] },
+    { key: 'azure_openai_api_key',       label: 'Azure API Key',       ru: 'Ключ Azure',       type: 'password', providers: ['azure_openai'] },
+    { key: 'azure_openai_endpoint',      label: 'Azure Endpoint',      ru: 'Эндпоинт Azure',   type: 'text',     providers: ['azure_openai'] },
+    { key: 'azure_openai_deployment',    label: 'Azure Deployment',    ru: 'Деплоймент Azure', type: 'text',     providers: ['azure_openai'] },
+    { key: 'azure_openai_api_version',   label: 'Azure API Version',   ru: 'Версия API Azure', type: 'text',     providers: ['azure_openai'] },
+  ]},
   { section: 'API KEYS', ru: 'API КЛЮЧИ', fields: [
-    { key: 'anthropic_api_key',         label: 'Anthropic API Key',   ru: 'Ключ Anthropic API',  type: 'password' },
     { key: 'polymarket_private_key',    label: 'PK Private Key',      ru: 'Приватный ключ',      type: 'password' },
     { key: 'polymarket_funder_address', label: 'Funder Address',      ru: 'Адрес фондирования',  type: 'text' },
     { key: 'polymarket_api_key',        label: 'CLOB API Key',        ru: 'CLOB API ключ',       type: 'password' },
@@ -818,7 +831,6 @@ const CONFIG_SCHEMA = [
     { key: 'polymarket_signature_type', label: 'Signature Type',      ru: 'Тип подписи',         type: 'number', step: 1 },
   ]},
   { section: 'ENDPOINTS', ru: 'ЭНДПОИНТЫ', fields: [
-    { key: 'anthropic_api_host',        label: 'Anthropic API Host',  ru: 'Хост Anthropic API',  type: 'text' },
     { key: 'gamma_api_host',            label: 'Gamma API Host',      ru: 'Хост Gamma API',      type: 'text' },
     { key: 'clob_host',                 label: 'CLOB Host',           ru: 'Хост CLOB',           type: 'text' },
     { key: 'exchange_address',          label: 'Exchange Address',    ru: 'Адрес биржи',         type: 'text' },
@@ -833,10 +845,10 @@ const CONFIG_SCHEMA = [
     { key: 'markets_per_cycle',              label: 'Markets Per Cycle',          ru: 'Рынков за цикл',             type: 'number', step: 1 },
   ]},
   { section: 'ESTIMATION', ru: 'ОЦЕНКА', fields: [
-    { key: 'claude_model',         label: 'Claude Model',    ru: 'Модель Claude',    type: 'text' },
     { key: 'ensemble_size',        label: 'Ensemble Size',   ru: 'Размер ансамбля',  type: 'number', step: 1 },
     { key: 'ensemble_temperature', label: 'Temperature',     ru: 'Температура',      type: 'number', step: 0.1 },
     { key: 'max_estimate_tokens',  label: 'Max Tokens',      ru: 'Макс. токенов',    type: 'number', step: 64 },
+    { key: 'max_estimate_std',     label: 'Max Std Dev',     ru: 'Макс. разброс',    type: 'number', step: 0.01 },
   ]},
   { section: 'SIZING & RISK', ru: 'РАЗМЕРЫ И РИСКИ', fields: [
     { key: 'kelly_fraction',            label: 'Kelly Fraction',    ru: 'Доля Келли',           type: 'number', step: 0.05 },
@@ -870,19 +882,100 @@ const CONFIG_SCHEMA = [
 
 let currentConfig = {}
 
+const PROVIDER_NAMES = {
+  anthropic:    'Anthropic (Claude)',
+  openai:       'OpenAI',
+  gemini:       'Google Gemini',
+  openrouter:   'OpenRouter',
+  azure_openai: 'Azure OpenAI',
+}
+
+const PROVIDER_KEY_FIELDS = {
+  anthropic:    'anthropic_api_key',
+  openai:       'openai_api_key',
+  gemini:       'gemini_api_key',
+  openrouter:   'openrouter_api_key',
+  azure_openai: 'azure_openai_api_key',
+}
+
+const PROVIDER_HOST_FIELDS = {
+  openai:       'openai_api_host',
+  azure_openai: 'azure_openai_endpoint',
+}
+
+function updateProviderVisibility(form, provider) {
+  form.querySelectorAll('[data-providers]').forEach(el => {
+    const allowed = el.dataset.providers.split(',')
+    el.style.display = allowed.includes(provider) ? '' : 'none'
+  })
+}
+
 async function openConfig() {
   currentConfig = await api.readConfig()
   const form = $('config-form')
   form.innerHTML = ''
+
   for (const s of CONFIG_SCHEMA) {
     const sec = document.createElement('div'); sec.className = 'config-section'
     sec.innerHTML = `<div class="config-section-title">${currentLang === 'ru' && s.ru ? s.ru : s.section}</div>`
     const grid = document.createElement('div'); grid.className = 'config-grid'
+
     for (const f of s.fields) {
       const val = currentConfig[f.key]
       const group = document.createElement('div'); group.className = 'form-group'
       const flabel = currentLang === 'ru' && f.ru ? f.ru : f.label
-      if (f.type === 'bool') {
+
+      // Provider-specific fields: tag with data-providers for show/hide
+      if (f.providers) {
+        group.dataset.providers = f.providers.join(',')
+      }
+
+      if (f.type === 'provider-select') {
+        group.innerHTML = `<label class="form-label">${flabel}</label>
+          <select class="form-input" data-key="${f.key}">${
+            Object.entries(PROVIDER_NAMES).map(([k, v]) =>
+              `<option value="${k}" ${(val || 'anthropic') === k ? 'selected' : ''}>${v}</option>`
+            ).join('')
+          }</select>`
+        const sel = group.querySelector('select')
+        sel.addEventListener('change', () => updateProviderVisibility(form, sel.value))
+
+      } else if (f.type === 'model-select') {
+        const currentModel = val || currentConfig.claude_model || ''
+        group.innerHTML = `<label class="form-label">${flabel}</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select class="form-input" data-key="${f.key}" style="flex:1;min-width:0">
+              <option value="${escHtml(currentModel)}" selected>${escHtml(currentModel) || '(enter or load)'}</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" id="load-models-btn" style="white-space:nowrap;flex-shrink:0">↺ Load</button>
+          </div>`
+        const btn = group.querySelector('#load-models-btn')
+        const sel = group.querySelector('select')
+        btn.addEventListener('click', async () => {
+          btn.textContent = '⟳'; btn.disabled = true
+          const provider = form.querySelector('[data-key="ai_provider"]')?.value || 'anthropic'
+          const keyField = PROVIDER_KEY_FIELDS[provider] || 'anthropic_api_key'
+          const apiKey = form.querySelector(`[data-key="${keyField}"]`)?.value || ''
+          const hostField = PROVIDER_HOST_FIELDS[provider]
+          const host = hostField ? (form.querySelector(`[data-key="${hostField}"]`)?.value || '') : ''
+          const deployment = form.querySelector('[data-key="azure_openai_deployment"]')?.value || ''
+          const apiVersion = form.querySelector('[data-key="azure_openai_api_version"]')?.value || ''
+          try {
+            const result = await api.fetchAiModels({ provider, apiKey, host, deployment, apiVersion })
+            if (result.error) { btn.textContent = '✗'; setTimeout(() => { btn.textContent = '↺ Load'; btn.disabled = false }, 2000); return }
+            const prev = sel.value
+            sel.innerHTML = result.models.map(m =>
+              `<option value="${escHtml(m.id)}" ${m.id === prev ? 'selected' : ''}>${escHtml(m.name)}</option>`
+            ).join('')
+            // Keep current value even if not in list
+            if (prev && !result.models.find(m => m.id === prev))
+              sel.insertAdjacentHTML('afterbegin', `<option value="${escHtml(prev)}" selected>${escHtml(prev)}</option>`)
+            btn.textContent = `✓ ${result.models.length}`
+          } catch { btn.textContent = '✗' }
+          setTimeout(() => { btn.textContent = '↺ Load'; btn.disabled = false }, 2000)
+        })
+
+      } else if (f.type === 'bool') {
         const checked = Boolean(val)
         group.innerHTML = `<div class="form-toggle-row">
           <label class="form-label">${flabel}</label>
@@ -913,6 +1006,11 @@ async function openConfig() {
     }
     sec.appendChild(grid); form.appendChild(sec)
   }
+
+  // Apply initial provider visibility
+  const initialProvider = currentConfig.ai_provider || 'anthropic'
+  updateProviderVisibility(form, initialProvider)
+
   $('config-modal').classList.remove('hidden')
 }
 
@@ -923,7 +1021,7 @@ async function saveConfig() {
       const el = document.querySelector(`[data-key="${f.key}"]`); if (!el) continue
       if (f.type === 'bool') newConfig[f.key] = el.checked
       else if (f.type === 'number') newConfig[f.key] = parseFloat(el.value)
-      else newConfig[f.key] = el.value
+      else newConfig[f.key] = el.value   // text, password, provider-select, model-select
     }
   }
   await api.writeConfig(newConfig)

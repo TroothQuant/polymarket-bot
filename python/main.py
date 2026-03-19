@@ -93,8 +93,15 @@ def main():
         print(f"  Scan: every {config.scan_interval_minutes}min, {config.markets_per_cycle} markets/cycle")
         print(f"{'='*60}\n")
 
-    if not config.anthropic_api_key:
-        log.error("ANTHROPIC_API_KEY not set")
+    _provider_key = {
+        "anthropic":    config.anthropic_api_key,
+        "openai":       config.openai_api_key,
+        "gemini":       config.gemini_api_key,
+        "openrouter":   config.openrouter_api_key,
+        "azure_openai": config.azure_openai_api_key,
+    }.get(config.ai_provider.lower(), "")
+    if not _provider_key:
+        log.error(f"API key for provider '{config.ai_provider}' is not set in config")
         sys.exit(1)
 
     # Load saved state or start fresh

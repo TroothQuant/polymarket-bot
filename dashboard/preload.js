@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('api', {
   saveFile:      (opts)  => ipcRenderer.invoke('save-file', opts),
   openLogsDir:   ()      => ipcRenderer.invoke('open-logs-dir'),
 
+  // AI provider model listing
+  fetchAiModels: (opts)  => ipcRenderer.invoke('fetch-ai-models', opts),
+
   // Events from main process
   onFileChanged: (cb)    => ipcRenderer.on('file-changed', (_, f) => cb(f)),
   onBotOutput:   (cb)    => ipcRenderer.on('bot-output',   (_, d) => cb(d)),

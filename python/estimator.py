@@ -1,4 +1,7 @@
-"""Claude ensemble probability estimation for prediction markets."""
+"""AI ensemble probability estimation for prediction markets.
+
+Supported providers: anthropic, openai, openrouter, azure_openai, gemini
+"""
 
 import json
 import logging
@@ -6,7 +9,7 @@ import statistics
 import time
 from typing import Optional
 
-import anthropic
+import requests
 
 from config import BotConfig
 from models import MarketInfo, Estimate
@@ -41,14 +44,23 @@ def _build_user_prompt(market: MarketInfo) -> str:
 
 class Estimator:
     def __init__(self, config: BotConfig):
-        kwargs = {"api_key": config.anthropic_api_key}
-        if config.anthropic_api_host:
-            kwargs["base_url"] = config.anthropic_api_host
-        self.client = anthropic.Anthropic(**kwargs)
         self.config = config
+        self._provider = config.ai_provider.lower()
+        self._model = config.ai_model or config.claude_model  # backward compat
+
+        if self._provider == "anthropic":
+            import anthropic as _anthropic_sdk
+            self._anthropic_sdk = _anthropic_sdk
+            kwargs: dict = {"api_key": config.anthropic_api_key}
+            if config.anthropic_api_host:
+                kwargs["base_url"] = config.anthropic_api_host
+            self._anthropic_client = _anthropic_sdk.Anthropic(**kwargs)
+        else:
+            self._anthropic_sdk = None
+            self._anthropic_client = None
 
     def estimate(self, market: MarketInfo) -> Optional[Estimate]:
-        """Run ensemble estimation: N independent Claude calls, trimmed mean."""
+        """Run ensemble estimation: N independent AI calls, trimmed mean."""
         raw_estimates: list[float] = []
         total_input = 0
         total_output = 0
@@ -70,7 +82,6 @@ class Estimator:
             if not raw_estimates:
                 return None
 
-        # Trimmed mean: drop highest and lowest if we have enough samples
         if len(raw_estimates) >= 4:
             sorted_est = sorted(raw_estimates)
             trimmed = sorted_est[1:-1]
@@ -80,7 +91,6 @@ class Estimator:
         fair_prob = statistics.mean(trimmed)
         confidence = statistics.stdev(raw_estimates) if len(raw_estimates) > 1 else 1.0
 
-        # Confidence filter: skip if ensemble disagreement is too high
         if len(raw_estimates) >= 2 and confidence > self.config.max_estimate_std:
             log.info(
                 f"SKIP (low confidence): {market.question[:50]}... "
@@ -104,62 +114,219 @@ class Estimator:
             output_tokens_used=total_output,
         )
 
+    # ── Provider dispatch ──────────────────────────────────────────────────
+
     def _single_call(self, market: MarketInfo):
-        """Single Claude call. Returns (prob, reasoning, input_tokens, output_tokens) or None."""
+        """Single call to the configured AI provider. Returns (prob, reasoning, in_tok, out_tok) or None."""
+        if self._provider == "anthropic":
+            return self._call_anthropic(market)
+        elif self._provider == "gemini":
+            return self._call_gemini(market)
+        elif self._provider in ("openai", "openrouter", "azure_openai"):
+            return self._call_openai_compat(market)
+        else:
+            log.error(f"Unknown AI provider: {self._provider}")
+            return None
+
+    def _parse_json_response(self, text: str):
+        """Parse probability JSON from model response. Returns (prob, reasoning) or None."""
         try:
-            response = self.client.messages.create(
-                model=self.config.claude_model,
+            if text.startswith("```"):
+                lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
+                text = "\n".join(lines)
+            data = json.loads(text)
+            prob = float(data["probability"])
+            reasoning = data.get("reasoning", "")
+            prob = max(0.02, min(0.98, prob))
+            return prob, reasoning
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            log.debug(f"Failed to parse estimate response: {e}")
+            return None
+
+    # ── Anthropic ─────────────────────────────────────────────────────────
+
+    def _call_anthropic(self, market: MarketInfo):
+        try:
+            response = self._anthropic_client.messages.create(
+                model=self._model,
                 max_tokens=self.config.max_estimate_tokens,
                 temperature=self.config.ensemble_temperature,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": _build_user_prompt(market)}],
             )
-
             text = response.content[0].text.strip()
             in_tok = response.usage.input_tokens
             out_tok = response.usage.output_tokens
-
-            # Handle markdown code blocks in response
-            if text.startswith("```"):
-                lines = text.split("\n")
-                # Drop first and last ``` lines
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                text = "\n".join(lines)
-
-            data = json.loads(text)
-            prob = float(data["probability"])
-            reasoning = data.get("reasoning", "")
-
-            prob = max(0.02, min(0.98, prob))
+            result = self._parse_json_response(text)
+            if result is None:
+                return None
+            prob, reasoning = result
             return prob, reasoning, in_tok, out_tok
-
-        except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
-            log.debug(f"Failed to parse estimate response: {e}")
-            return None
-        except anthropic.RateLimitError:
+        except self._anthropic_sdk.RateLimitError:
             log.warning("Anthropic rate limit — waiting 5s")
             time.sleep(5)
             return None
-        except anthropic.APIError as e:
+        except self._anthropic_sdk.APIError as e:
             log.error(f"Anthropic API error: {e}")
             return None
 
-    def validate_api_key(self) -> bool:
-        """Make a minimal test call to validate the API key.
+    # ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
 
-        Returns False on HTTP 401 (invalid/unauthorized key).
-        Other errors (network, rate-limit) return True so a transient failure
-        doesn't block startup.
-        """
+    def _call_openai_compat(self, market: MarketInfo):
+        provider = self._provider
+        model = self._model
+
+        if provider == "openai":
+            host = (self.config.openai_api_host or "https://api.openai.com").rstrip("/")
+            url = f"{host}/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {self.config.openai_api_key}"}
+        elif provider == "openrouter":
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {self.config.openrouter_api_key}"}
+        else:  # azure_openai
+            endpoint = self.config.azure_openai_endpoint.rstrip("/")
+            deployment = self.config.azure_openai_deployment
+            version = self.config.azure_openai_api_version or "2024-02-01"
+            url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={version}"
+            headers = {"api-key": self.config.azure_openai_api_key}
+            model = deployment  # Azure uses deployment name
+
+        headers["Content-Type"] = "application/json"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": _build_user_prompt(market)},
+            ],
+            "temperature": self.config.ensemble_temperature,
+            "max_tokens": self.config.max_estimate_tokens,
+        }
+
         try:
-            self.client.messages.create(
-                model=self.config.claude_model,
-                max_tokens=1,
-                messages=[{"role": "user", "content": "hi"}],
-            )
-            return True
-        except anthropic.AuthenticationError:
-            return False
-        except Exception:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 429:
+                log.warning(f"{provider} rate limit — waiting 5s")
+                time.sleep(5)
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            usage = data.get("usage", {})
+            in_tok = usage.get("prompt_tokens", 0)
+            out_tok = usage.get("completion_tokens", 0)
+            result = self._parse_json_response(text)
+            if result is None:
+                return None
+            prob, reasoning = result
+            return prob, reasoning, in_tok, out_tok
+        except requests.exceptions.HTTPError as e:
+            log.error(f"{provider} API error: {e}")
+            return None
+        except Exception as e:
+            log.debug(f"{provider} call failed: {e}")
+            return None
+
+    # ── Google Gemini ─────────────────────────────────────────────────────
+
+    def _call_gemini(self, market: MarketInfo):
+        model = self._model
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            f"?key={self.config.gemini_api_key}"
+        )
+        payload = {
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": _build_user_prompt(market)}]}],
+            "generationConfig": {
+                "temperature": self.config.ensemble_temperature,
+                "maxOutputTokens": self.config.max_estimate_tokens,
+            },
+        }
+        try:
+            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+            if resp.status_code == 429:
+                log.warning("Gemini rate limit — waiting 5s")
+                time.sleep(5)
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            usage = data.get("usageMetadata", {})
+            in_tok = usage.get("promptTokenCount", 0)
+            out_tok = usage.get("candidatesTokenCount", 0)
+            result = self._parse_json_response(text)
+            if result is None:
+                return None
+            prob, reasoning = result
+            return prob, reasoning, in_tok, out_tok
+        except requests.exceptions.HTTPError as e:
+            log.error(f"Gemini API error: {e}")
+            return None
+        except Exception as e:
+            log.debug(f"Gemini call failed: {e}")
+            return None
+
+    # ── API key validation ────────────────────────────────────────────────
+
+    def validate_api_key(self) -> bool:
+        """Make a minimal test call to validate the configured provider's API key.
+
+        Returns False on auth failure (HTTP 401/403, AuthenticationError).
+        Other errors (network, rate-limit) return True so transient failures don't block startup.
+        """
+        provider = self._provider
+        try:
+            if provider == "anthropic":
+                self._anthropic_client.messages.create(
+                    model=self._model,
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+                return True
+
+            elif provider in ("openai", "openrouter", "azure_openai"):
+                if provider == "openai":
+                    host = (self.config.openai_api_host or "https://api.openai.com").rstrip("/")
+                    url = f"{host}/v1/chat/completions"
+                    auth_headers = {"Authorization": f"Bearer {self.config.openai_api_key}"}
+                elif provider == "openrouter":
+                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    auth_headers = {"Authorization": f"Bearer {self.config.openrouter_api_key}"}
+                else:
+                    endpoint = self.config.azure_openai_endpoint.rstrip("/")
+                    deployment = self.config.azure_openai_deployment
+                    version = self.config.azure_openai_api_version or "2024-02-01"
+                    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={version}"
+                    auth_headers = {"api-key": self.config.azure_openai_api_key}
+                resp = requests.post(
+                    url,
+                    json={"model": self._model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                    headers={**auth_headers, "Content-Type": "application/json"},
+                    timeout=10,
+                )
+                if resp.status_code in (401, 403):
+                    return False
+                return True
+
+            elif provider == "gemini":
+                resp = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent"
+                    f"?key={self.config.gemini_api_key}",
+                    json={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}},
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                )
+                # Gemini returns 400 with "API key" in body for invalid keys (not 401)
+                if resp.status_code == 403:
+                    return False
+                if resp.status_code == 400 and "API key" in resp.text:
+                    return False
+                return True
+
+        except Exception as e:
+            if self._anthropic_sdk and isinstance(e, self._anthropic_sdk.AuthenticationError):
+                return False
             # Network errors, rate limits, etc. — don't block startup
             return True
+
+        return True

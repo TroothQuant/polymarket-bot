@@ -98,105 +98,241 @@ public sealed class Estimator
 
     private async Task<CallResult?> SingleCallAsync(MarketInfo market, CancellationToken ct)
     {
-        // Retry delays for transient API overload (429 / 529): 10s, 20s, 40s
+        // Retry delays for transient overload (429 / 529): 10s, 20s, 40s
         int[] backoffMs = { 10_000, 20_000, 40_000 };
 
         for (var attempt = 0; attempt <= backoffMs.Length; attempt++)
         {
             try
             {
-                var userPrompt = BuildUserPrompt(market);
+                var (status, body) = await MakeProviderRequestAsync(market, ct);
 
-                var requestBody = new
-                {
-                    model = _config.ClaudeModel,
-                    max_tokens = _config.MaxEstimateTokens,
-                    temperature = _config.EnsembleTemperature,
-                    system = SystemPrompt,
-                    messages = new[]
-                    {
-                        new { role = "user", content = userPrompt }
-                    }
-                };
-
-                var json = JsonSerializer.Serialize(requestBody);
-                var request = new HttpRequestMessage(HttpMethod.Post, $"{_config.AnthropicApiHost}/v1/messages")
-                {
-                    Content = new StringContent(json, Encoding.UTF8, "application/json")
-                };
-                request.Headers.Add("x-api-key", _config.AnthropicApiKey);
-                request.Headers.Add("anthropic-version", "2023-06-01");
-
-                var resp = await _http.SendAsync(request, ct);
-                var status = (int)resp.StatusCode;
-
-                // 429 = rate-limited, 529 = API overloaded — both are transient
                 if (status == 429 || status == 529)
                 {
                     if (attempt < backoffMs.Length)
                     {
                         var delay = backoffMs[attempt];
-                        _log.LogWarning("Anthropic {Status} (attempt {A}/{Max}) — retrying in {Sec}s",
-                            status, attempt + 1, backoffMs.Length, delay / 1000);
+                        _log.LogWarning("{Provider} {Status} (attempt {A}/{Max}) — retrying in {Sec}s",
+                            _config.AiProvider, status, attempt + 1, backoffMs.Length, delay / 1000);
                         await Task.Delay(delay, ct);
                         continue;
                     }
-                    _log.LogError("Anthropic {Status}: giving up after {Max} retries for {Question}",
-                        status, backoffMs.Length, Truncate(market.Question, 40));
+                    _log.LogError("{Provider} {Status}: giving up after {Max} retries for {Question}",
+                        _config.AiProvider, status, backoffMs.Length, Truncate(market.Question, 40));
                     return null;
                 }
 
-                resp.EnsureSuccessStatusCode();
-
-                var responseJson = await resp.Content.ReadAsStringAsync(ct);
-                var doc = JsonDocument.Parse(responseJson);
-
-                var text = doc.RootElement
-                    .GetProperty("content")[0]
-                    .GetProperty("text")
-                    .GetString()?.Trim() ?? "";
-
-                var usage = doc.RootElement.GetProperty("usage");
-                var inputTokens = usage.GetProperty("input_tokens").GetInt32();
-                var outputTokens = usage.GetProperty("output_tokens").GetInt32();
-
-                // Handle markdown code blocks
-                if (text.StartsWith("```"))
+                if (status < 200 || status >= 300)
                 {
-                    var lines = text.Split('\n')
-                        .Where(l => !l.TrimStart().StartsWith("```"))
-                        .ToArray();
-                    text = string.Join('\n', lines);
+                    _log.LogError("{Provider} HTTP {Status}: {Body}",
+                        _config.AiProvider, status, body[..Math.Min(body.Length, 200)]);
+                    return null;
                 }
 
-                var parsed = JsonDocument.Parse(text);
-                var prob = parsed.RootElement.GetProperty("probability").GetDouble();
-                var reasoning = "";
-                if (parsed.RootElement.TryGetProperty("reasoning", out var r))
-                    reasoning = r.GetString() ?? "";
-
-                prob = Math.Clamp(prob, 0.02, 0.98);
-
-                return new CallResult(prob, reasoning, inputTokens, outputTokens);
+                return ParseProviderResponse(body);
             }
             catch (JsonException ex)
             {
                 _log.LogDebug("Failed to parse estimate response: {Error}", ex.Message);
                 return null;
             }
-            catch (HttpRequestException ex)
-            {
-                _log.LogError("Anthropic API error: {Error}", ex.Message);
-                return null;
-            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _log.LogDebug("Estimate call failed: {Error}", ex.Message);
+                _log.LogDebug("{Provider} call failed: {Error}", _config.AiProvider, ex.Message);
                 return null;
             }
         }
 
         return null;
+    }
+
+    private string ActiveModel =>
+        !string.IsNullOrEmpty(_config.AiModel) ? _config.AiModel : _config.ClaudeModel;
+
+    private async Task<(int status, string body)> MakeProviderRequestAsync(MarketInfo market, CancellationToken ct)
+    {
+        var userPrompt = BuildUserPrompt(market);
+        return _config.AiProvider.ToLowerInvariant() switch
+        {
+            "gemini"       => await MakeGeminiRequestAsync(userPrompt, ct),
+            "openai"       => await MakeOpenAiCompatRequestAsync("openai", userPrompt, ct),
+            "openrouter"   => await MakeOpenAiCompatRequestAsync("openrouter", userPrompt, ct),
+            "azure_openai" => await MakeOpenAiCompatRequestAsync("azure_openai", userPrompt, ct),
+            _              => await MakeAnthropicRequestAsync(userPrompt, ct),  // default: anthropic
+        };
+    }
+
+    // ── Anthropic ──────────────────────────────────────────────────────────
+
+    private async Task<(int, string)> MakeAnthropicRequestAsync(string userPrompt, CancellationToken ct)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            model = ActiveModel,
+            max_tokens = _config.MaxEstimateTokens,
+            temperature = _config.EnsembleTemperature,
+            system = SystemPrompt,
+            messages = new[] { new { role = "user", content = userPrompt } }
+        });
+        var host = string.IsNullOrEmpty(_config.AnthropicApiHost) ? "https://api.anthropic.com" : _config.AnthropicApiHost;
+        var req = new HttpRequestMessage(HttpMethod.Post, $"{host}/v1/messages")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        req.Headers.Add("x-api-key", _config.AnthropicApiKey);
+        req.Headers.Add("anthropic-version", "2023-06-01");
+        var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+    }
+
+    private static CallResult? ParseAnthropicResponse(string body)
+    {
+        var doc = JsonDocument.Parse(body);
+        var text = doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString()?.Trim() ?? "";
+        var usage = doc.RootElement.GetProperty("usage");
+        var inputTokens = usage.GetProperty("input_tokens").GetInt32();
+        var outputTokens = usage.GetProperty("output_tokens").GetInt32();
+        var (prob, reasoning) = ParseProbabilityJson(text);
+        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+    }
+
+    // ── OpenAI-compatible (OpenAI, OpenRouter, Azure OpenAI) ──────────────
+
+    private async Task<(int, string)> MakeOpenAiCompatRequestAsync(string provider, string userPrompt, CancellationToken ct)
+    {
+        string url;
+        var model = ActiveModel;
+        var req = new HttpRequestMessage(HttpMethod.Post, "");
+
+        if (provider == "openai")
+        {
+            var host = string.IsNullOrEmpty(_config.OpenAiApiHost) ? "https://api.openai.com" : _config.OpenAiApiHost.TrimEnd('/');
+            url = $"{host}/v1/chat/completions";
+            req.Headers.Add("Authorization", $"Bearer {_config.OpenAiApiKey}");
+        }
+        else if (provider == "openrouter")
+        {
+            url = "https://openrouter.ai/api/v1/chat/completions";
+            req.Headers.Add("Authorization", $"Bearer {_config.OpenRouterApiKey}");
+        }
+        else  // azure_openai
+        {
+            var endpoint = _config.AzureOpenAiEndpoint.TrimEnd('/');
+            var deployment = _config.AzureOpenAiDeployment;
+            var version = string.IsNullOrEmpty(_config.AzureOpenAiApiVersion) ? "2024-02-01" : _config.AzureOpenAiApiVersion;
+            url = $"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={version}";
+            req.Headers.Add("api-key", _config.AzureOpenAiApiKey);
+            model = deployment;  // Azure uses deployment name
+        }
+
+        var body = JsonSerializer.Serialize(new
+        {
+            model,
+            messages = new[]
+            {
+                new { role = "system", content = SystemPrompt },
+                new { role = "user",   content = userPrompt }
+            },
+            temperature = _config.EnsembleTemperature,
+            max_tokens = _config.MaxEstimateTokens,
+        });
+        req.RequestUri = new Uri(url);
+        req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+    }
+
+    private static CallResult? ParseOpenAiCompatResponse(string body)
+    {
+        var doc = JsonDocument.Parse(body);
+        var text = doc.RootElement
+            .GetProperty("choices")[0]
+            .GetProperty("message")
+            .GetProperty("content")
+            .GetString()?.Trim() ?? "";
+        var usage = doc.RootElement.TryGetProperty("usage", out var u) ? u : (JsonElement?)null;
+        var inputTokens  = usage?.TryGetProperty("prompt_tokens",     out var pt) == true ? pt.GetInt32() : 0;
+        var outputTokens = usage?.TryGetProperty("completion_tokens", out var ct2) == true ? ct2.GetInt32() : 0;
+        var (prob, reasoning) = ParseProbabilityJson(text);
+        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+    }
+
+    // ── Google Gemini ──────────────────────────────────────────────────────
+
+    private async Task<(int, string)> MakeGeminiRequestAsync(string userPrompt, CancellationToken ct)
+    {
+        var model = ActiveModel;
+        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
+        var body = JsonSerializer.Serialize(new
+        {
+            systemInstruction = new { parts = new[] { new { text = SystemPrompt } } },
+            contents = new[] { new { role = "user", parts = new[] { new { text = userPrompt } } } },
+            generationConfig = new
+            {
+                temperature = _config.EnsembleTemperature,
+                maxOutputTokens = _config.MaxEstimateTokens,
+            }
+        });
+        var req = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        var resp = await _http.SendAsync(req, ct);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+    }
+
+    private static CallResult? ParseGeminiResponse(string body)
+    {
+        var doc = JsonDocument.Parse(body);
+        var text = doc.RootElement
+            .GetProperty("candidates")[0]
+            .GetProperty("content")
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString()?.Trim() ?? "";
+        var meta = doc.RootElement.TryGetProperty("usageMetadata", out var m) ? m : (JsonElement?)null;
+        var inputTokens  = meta?.TryGetProperty("promptTokenCount",     out var pt) == true ? pt.GetInt32() : 0;
+        var outputTokens = meta?.TryGetProperty("candidatesTokenCount", out var ct2) == true ? ct2.GetInt32() : 0;
+        var (prob, reasoning) = ParseProbabilityJson(text);
+        return prob < 0 ? null : new CallResult(prob, reasoning, inputTokens, outputTokens);
+    }
+
+    // ── Response parsing (shared) ──────────────────────────────────────────
+
+    private CallResult? ParseProviderResponse(string body)
+    {
+        return _config.AiProvider.ToLowerInvariant() switch
+        {
+            "gemini"       => ParseGeminiResponse(body),
+            "openai"       => ParseOpenAiCompatResponse(body),
+            "openrouter"   => ParseOpenAiCompatResponse(body),
+            "azure_openai" => ParseOpenAiCompatResponse(body),
+            _              => ParseAnthropicResponse(body),
+        };
+    }
+
+    /// <summary>
+    /// Parse {"probability": 0.XX, "reasoning": "..."} from model response text.
+    /// Returns (prob, reasoning) where prob = -1 signals parse failure.
+    /// </summary>
+    private static (double prob, string reasoning) ParseProbabilityJson(string text)
+    {
+        try
+        {
+            if (text.StartsWith("```"))
+            {
+                var lines = text.Split('\n').Where(l => !l.TrimStart().StartsWith("```")).ToArray();
+                text = string.Join('\n', lines);
+            }
+            var doc = JsonDocument.Parse(text);
+            var prob = doc.RootElement.GetProperty("probability").GetDouble();
+            var reasoning = doc.RootElement.TryGetProperty("reasoning", out var r) ? r.GetString() ?? "" : "";
+            return (Math.Clamp(prob, 0.02, 0.98), reasoning);
+        }
+        catch
+        {
+            return (-1, "");
+        }
     }
 
     private static string BuildUserPrompt(MarketInfo market)
@@ -224,41 +360,91 @@ public sealed class Estimator
     }
 
     /// <summary>
-    /// Makes a minimal test call to validate the API key. Returns false on HTTP 401 (invalid key).
-    /// Other errors (network, rate-limit) return true so a transient failure doesn't block startup.
+    /// Makes a minimal test call to validate the configured provider's API key.
+    /// Returns false on auth failure (HTTP 401/403). Network/rate-limit errors return true (don't block startup).
     /// </summary>
     public async Task<bool> ValidateApiKeyAsync(CancellationToken ct = default)
     {
-        var requestBody = new
-        {
-            model = _config.ClaudeModel,
-            max_tokens = 1,
-            messages = new[] { new { role = "user", content = "hi" } }
-        };
-
-        var json = JsonSerializer.Serialize(requestBody);
-        var request = new HttpRequestMessage(HttpMethod.Post, $"{_config.AnthropicApiHost}/v1/messages")
-        {
-            Content = new StringContent(json, Encoding.UTF8, "application/json")
-        };
-        request.Headers.Add("x-api-key", _config.AnthropicApiKey);
-        request.Headers.Add("anthropic-version", "2023-06-01");
-
         try
         {
-            var resp = await _http.SendAsync(request, ct);
-            if ((int)resp.StatusCode == 401)
+            var provider = _config.AiProvider.ToLowerInvariant();
+            HttpRequestMessage req;
+
+            if (provider == "gemini")
             {
-                var body = await resp.Content.ReadAsStringAsync(ct);
-                _log.LogError("Anthropic API key is invalid (HTTP 401): {Body}", body);
+                var model = ActiveModel;
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
+                var body = JsonSerializer.Serialize(new
+                {
+                    contents = new[] { new { parts = new[] { new { text = "hi" } } } },
+                    generationConfig = new { maxOutputTokens = 1 }
+                });
+                req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+            }
+            else if (provider is "openai" or "openrouter" or "azure_openai")
+            {
+                var (url, authHeader, authValue) = provider switch
+                {
+                    "openai" => ($"{(_config.OpenAiApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.OpenAiApiKey}"),
+                    "openrouter" => ("https://openrouter.ai/api/v1/chat/completions", "Authorization", $"Bearer {_config.OpenRouterApiKey}"),
+                    _ => ($"{_config.AzureOpenAiEndpoint.TrimEnd('/')}/openai/deployments/{_config.AzureOpenAiDeployment}/chat/completions?api-version={_config.AzureOpenAiApiVersion}", "api-key", _config.AzureOpenAiApiKey),
+                };
+                var body = JsonSerializer.Serialize(new
+                {
+                    model = provider == "azure_openai" ? _config.AzureOpenAiDeployment : ActiveModel,
+                    messages = new[] { new { role = "user", content = "hi" } },
+                    max_tokens = 1
+                });
+                req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+                req.Headers.Add(authHeader, authValue);
+            }
+            else  // anthropic
+            {
+                var host = string.IsNullOrEmpty(_config.AnthropicApiHost) ? "https://api.anthropic.com" : _config.AnthropicApiHost;
+                var body = JsonSerializer.Serialize(new
+                {
+                    model = ActiveModel,
+                    max_tokens = 1,
+                    messages = new[] { new { role = "user", content = "hi" } }
+                });
+                req = new HttpRequestMessage(HttpMethod.Post, $"{host}/v1/messages")
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+                req.Headers.Add("x-api-key", _config.AnthropicApiKey);
+                req.Headers.Add("anthropic-version", "2023-06-01");
+            }
+
+            var resp = await _http.SendAsync(req, ct);
+            var status = (int)resp.StatusCode;
+
+            if (status == 401 || status == 403)
+            {
+                var respBody = await resp.Content.ReadAsStringAsync(ct);
+                _log.LogError("{Provider} API key invalid (HTTP {Status}): {Body}",
+                    _config.AiProvider, status, respBody[..Math.Min(respBody.Length, 200)]);
                 return false;
             }
-            // 400, 200, anything else → key is accepted by Anthropic
+            // Gemini returns 400 for invalid keys — check response body
+            if (provider == "gemini" && status == 400)
+            {
+                var respBody = await resp.Content.ReadAsStringAsync(ct);
+                if (respBody.Contains("API key", StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.LogError("Gemini API key invalid: {Body}", respBody[..Math.Min(respBody.Length, 200)]);
+                    return false;
+                }
+            }
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Network errors, DNS failures, etc. — don't block startup; first real call will surface the issue
             _log.LogWarning("API key validation network error: {Error} — continuing", ex.Message);
             return true;
         }

@@ -24,8 +24,12 @@ public sealed class BotConfig
     public int MarketsPerCycle { get; init; } = 15;
     public double MaxSpread { get; init; } = 0.04;
 
+    // AI provider
+    public string AiProvider { get; init; } = "anthropic";   // anthropic | openai | gemini | openrouter | azure_openai
+    public string AiModel { get; init; } = "";               // if empty, falls back to ClaudeModel
+
     // Estimation
-    public string ClaudeModel { get; init; } = "claude-sonnet-4-20250514";
+    public string ClaudeModel { get; init; } = "claude-sonnet-4-20250514";   // used when AiProvider=anthropic and AiModel not set
     public int EnsembleSize { get; init; } = 3;
     public double EnsembleTemperature { get; init; } = 0.7;
     public int MaxEstimateTokens { get; init; } = 1024;
@@ -55,8 +59,16 @@ public sealed class BotConfig
     // Capital
     public double InitialBankroll { get; init; } = 10000.0;
 
-    // API keys
+    // API keys — per provider
     public string AnthropicApiKey { get; init; } = "";
+    public string OpenAiApiKey { get; init; } = "";
+    public string OpenAiApiHost { get; init; } = "https://api.openai.com";
+    public string GeminiApiKey { get; init; } = "";
+    public string OpenRouterApiKey { get; init; } = "";
+    public string AzureOpenAiApiKey { get; init; } = "";
+    public string AzureOpenAiEndpoint { get; init; } = "";
+    public string AzureOpenAiDeployment { get; init; } = "";
+    public string AzureOpenAiApiVersion { get; init; } = "2024-02-01";
     public string PolymarketPrivateKey { get; init; } = "";
     public string PolymarketFunderAddress { get; init; } = "";
     public int PolymarketChainId { get; init; } = 137;
@@ -107,6 +119,8 @@ public sealed class BotConfig
 
         return new BotConfig
         {
+            AiProvider = Cfg("ai_provider", "AI_PROVIDER", "anthropic"),
+            AiModel = Cfg("ai_model", "AI_MODEL", ""),
             LiveTrading = Cfg("live_trading", "LIVE_TRADING", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             ScanIntervalMinutes = int.Parse(Cfg("scan_interval_minutes", "SCAN_INTERVAL_MINUTES", "10")),
             MinLiquidity = double.Parse(Cfg("min_liquidity", "MIN_LIQUIDITY", "10000")),
@@ -136,6 +150,14 @@ public sealed class BotConfig
             MaxConcurrentPositions = int.Parse(Cfg("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "8")),
             InitialBankroll = double.Parse(Cfg("initial_bankroll", "INITIAL_BANKROLL", "10000")),
             AnthropicApiKey = Cfg("anthropic_api_key", "ANTHROPIC_API_KEY", ""),
+            OpenAiApiKey = Cfg("openai_api_key", "OPENAI_API_KEY", ""),
+            OpenAiApiHost = Cfg("openai_api_host", "OPENAI_API_HOST", "https://api.openai.com"),
+            GeminiApiKey = Cfg("gemini_api_key", "GEMINI_API_KEY", ""),
+            OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
+            AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
+            AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),
+            AzureOpenAiDeployment = Cfg("azure_openai_deployment", "AZURE_OPENAI_DEPLOYMENT", ""),
+            AzureOpenAiApiVersion = Cfg("azure_openai_api_version", "AZURE_OPENAI_API_VERSION", "2024-02-01"),
             PolymarketPrivateKey = Cfg("polymarket_private_key", "POLYMARKET_PRIVATE_KEY", ""),
             PolymarketFunderAddress = Cfg("polymarket_funder_address", "POLYMARKET_FUNDER_ADDRESS", ""),
             PolymarketChainId = int.Parse(Cfg("polymarket_chain_id", "POLYMARKET_CHAIN_ID", "137")),
