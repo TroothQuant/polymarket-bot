@@ -853,10 +853,15 @@ public sealed class ClobApiClient
             var resp = await _http.GetStringAsync($"{_host}/tick-size?token_id={tokenId}", ct);
             var doc = JsonDocument.Parse(resp);
             if (doc.RootElement.TryGetProperty("minimum_tick_size", out var ts))
-                return ts.GetString() ?? "0.01";
+            {
+                if (ts.ValueKind == JsonValueKind.String) return ts.GetString() ?? "0.01";
+                if (ts.ValueKind == JsonValueKind.Number) return ts.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
             // Some responses return just the value
             if (doc.RootElement.ValueKind == JsonValueKind.String)
                 return doc.RootElement.GetString() ?? "0.01";
+            if (doc.RootElement.ValueKind == JsonValueKind.Number)
+                return doc.RootElement.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture);
             return "0.01";
         }
         catch (Exception ex)

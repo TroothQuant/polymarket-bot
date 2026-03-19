@@ -121,11 +121,14 @@ public sealed class Portfolio
 
         if (sizeUsd < _config.MinTradeUsd) return null;
 
-        // CLOB minimum: 5 tokens AND $1 minimum for marketable BUY orders
-        var minClobUsd = Math.Max(5.0 * marketPrice, 1.0);
+        // CLOB minimum: 5 tokens at the aggressive price (market price + 2 ticks of BUY aggression).
+        // Default tick size is 0.01, so effective price = price + 0.02.
+        // Using the raw market price would underestimate cost and let orders through that fail at execution.
+        var effectivePrice = marketPrice + 0.02;
+        var minClobUsd = Math.Max(5.0 * effectivePrice, 1.0);
         if (sizeUsd < minClobUsd)
         {
-            _log.LogInformation("Position ${Size:F2} below CLOB minimum ${Min:F2} (5 tokens @ {Price:F3})",
+            _log.LogInformation("Position ${Size:F2} below CLOB minimum ${Min:F2} (5 tokens @ {Price:F3} + 2 ticks)",
                 sizeUsd, minClobUsd, marketPrice);
             return null;
         }

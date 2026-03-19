@@ -598,8 +598,10 @@ while (!cts.Token.IsCancellationRequested)
             }
 
             // Skip estimation if we can't afford the CLOB minimum for either side.
-            // CLOB enforces: 5 tokens minimum AND $1 minimum for marketable BUY orders.
-            var minClobCost = Math.Max(5.0 * Math.Min(market.OutcomeYesPrice, market.OutcomeNoPrice), 1.0);
+            // CLOB enforces: 5 tokens minimum. Use aggressive price (+ 0.02 for 2-tick BUY aggression)
+            // so we don't call Claude only to fail at order execution.
+            var bestPrice = Math.Min(market.OutcomeYesPrice, market.OutcomeNoPrice);
+            var minClobCost = Math.Max(5.0 * (bestPrice + 0.02), 1.0);
             if (portfolio.Bankroll < minClobCost)
             {
                 log.LogInformation(

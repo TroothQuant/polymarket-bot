@@ -100,10 +100,13 @@ class Portfolio:
         if size_usd < self.config.min_trade_usd:
             return None
 
-        # CLOB minimum: 5 tokens AND $1 minimum for marketable BUY orders
-        min_clob_usd = max(5.0 * market_price, 1.0)
+        # CLOB minimum: 5 tokens at the aggressive price (market price + 2 ticks of BUY aggression).
+        # Default tick size is 0.01, so effective price = price + 0.02.
+        # Using raw market price underestimates cost and lets orders through that fail at execution.
+        effective_price = market_price + 0.02
+        min_clob_usd = max(5.0 * effective_price, 1.0)
         if size_usd < min_clob_usd:
-            log.debug(f"Position ${size_usd:.2f} below CLOB minimum ${min_clob_usd:.2f} (5 tokens @ {market_price})")
+            log.debug(f"Position ${size_usd:.2f} below CLOB minimum ${min_clob_usd:.2f} (5 tokens @ {market_price} + 2 ticks)")
             return None
 
         return Signal(
