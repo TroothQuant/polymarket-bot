@@ -25,11 +25,33 @@ public sealed class BotConfig
     public double MaxSpread { get; init; } = 0.04;
 
     // AI provider
-    public string AiProvider { get; init; } = "anthropic";   // anthropic | openai | gemini | openrouter | azure_openai
-    public string AiModel { get; init; } = "";               // if empty, falls back to ClaudeModel
+    public string AiProvider { get; init; } = "anthropic";   // selected provider for single-provider mode
+    public bool MultiProvider { get; init; } = false;        // True = query ALL configured providers and aggregate
+
+    // Per-provider credentials + models (one place per provider, no overlap)
+    // Anthropic
+    public string AnthropicApiKey { get; init; } = "";
+    public string AnthropicApiHost { get; init; } = "https://api.anthropic.com";
+    public string AnthropicModel { get; init; } = "claude-sonnet-4-6";
+    // OpenAI
+    public string OpenAiApiKey { get; init; } = "";
+    public string OpenAiApiHost { get; init; } = "https://api.openai.com";
+    public string OpenAiModel { get; init; } = "gpt-4o";
+    // Google Gemini
+    public string GeminiApiKey { get; init; } = "";
+    public string GeminiApiHost { get; init; } = "https://generativelanguage.googleapis.com";
+    public string GeminiModel { get; init; } = "gemini-2.0-flash";
+    // OpenRouter
+    public string OpenRouterApiKey { get; init; } = "";
+    public string OpenRouterApiHost { get; init; } = "https://openrouter.ai";
+    public string OpenRouterModel { get; init; } = "";
+    // Azure OpenAI
+    public string AzureOpenAiApiKey { get; init; } = "";
+    public string AzureOpenAiEndpoint { get; init; } = "";
+    public string AzureOpenAiDeployment { get; init; } = "";
+    public string AzureOpenAiApiVersion { get; init; } = "2024-02-01";
 
     // Estimation
-    public string ClaudeModel { get; init; } = "claude-sonnet-4-20250514";   // used when AiProvider=anthropic and AiModel not set
     public int EnsembleSize { get; init; } = 3;
     public double EnsembleTemperature { get; init; } = 0.7;
     public int MaxEstimateTokens { get; init; } = 1024;
@@ -59,18 +81,7 @@ public sealed class BotConfig
     // Capital
     public double InitialBankroll { get; init; } = 10000.0;
 
-    // API keys — per provider
-    public string AnthropicApiKey { get; init; } = "";
-    public string OpenAiApiKey { get; init; } = "";
-    public string OpenAiApiHost { get; init; } = "https://api.openai.com";
-    public string GeminiApiKey { get; init; } = "";
-    public string GeminiApiHost { get; init; } = "https://generativelanguage.googleapis.com";
-    public string OpenRouterApiKey { get; init; } = "";
-    public string OpenRouterApiHost { get; init; } = "https://openrouter.ai";
-    public string AzureOpenAiApiKey { get; init; } = "";
-    public string AzureOpenAiEndpoint { get; init; } = "";
-    public string AzureOpenAiDeployment { get; init; } = "";
-    public string AzureOpenAiApiVersion { get; init; } = "2024-02-01";
+    // Polymarket credentials
     public string PolymarketPrivateKey { get; init; } = "";
     public string PolymarketFunderAddress { get; init; } = "";
     public int PolymarketChainId { get; init; } = 137;
@@ -81,8 +92,7 @@ public sealed class BotConfig
     public string PolymarketApiSecret { get; init; } = "";
     public string PolymarketApiPassphrase { get; init; } = "";
 
-    // Endpoints / contracts (required — set via polymarket_bot_config.json or env vars)
-    public string AnthropicApiHost { get; init; } = "";
+    // Polymarket endpoints / contracts
     public string GammaApiHost { get; init; } = "";
     public string ClobHost { get; init; } = "";
     public string ExchangeAddress { get; init; } = "";
@@ -119,10 +129,12 @@ public sealed class BotConfig
             return def;
         }
 
+        // Backward compat: claude_model / ai_model → anthropic_model
+        var legacyAnthropicModel = Cfg("claude_model", "CLAUDE_MODEL", "") is { Length: > 0 } cm ? cm
+            : Cfg("ai_model", "AI_MODEL", "");
+
         return new BotConfig
         {
-            AiProvider = Cfg("ai_provider", "AI_PROVIDER", "anthropic"),
-            AiModel = Cfg("ai_model", "AI_MODEL", ""),
             LiveTrading = Cfg("live_trading", "LIVE_TRADING", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             ScanIntervalMinutes = int.Parse(Cfg("scan_interval_minutes", "SCAN_INTERVAL_MINUTES", "10")),
             MinLiquidity = double.Parse(Cfg("min_liquidity", "MIN_LIQUIDITY", "10000")),
@@ -131,37 +143,43 @@ public sealed class BotConfig
             MinMarketPrice = double.Parse(Cfg("min_market_price", "MIN_MARKET_PRICE", "0.10")),
             MarketsPerCycle = int.Parse(Cfg("markets_per_cycle", "MARKETS_PER_CYCLE", "15")),
             MaxSpread = double.Parse(Cfg("max_spread", "MAX_SPREAD", "0.04")),
-            ClaudeModel = Cfg("claude_model", "CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+            AiProvider = Cfg("ai_provider", "AI_PROVIDER", "anthropic"),
+            MultiProvider = Cfg("multi_provider", "MULTI_PROVIDER", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            AnthropicApiKey = Cfg("anthropic_api_key", "ANTHROPIC_API_KEY", ""),
+            AnthropicApiHost = Cfg("anthropic_api_host", "ANTHROPIC_API_HOST", "https://api.anthropic.com"),
+            AnthropicModel = Cfg("anthropic_model", "ANTHROPIC_MODEL", legacyAnthropicModel.Length > 0 ? legacyAnthropicModel : "claude-sonnet-4-6"),
+            OpenAiApiKey = Cfg("openai_api_key", "OPENAI_API_KEY", ""),
+            OpenAiApiHost = Cfg("openai_api_host", "OPENAI_API_HOST", "https://api.openai.com"),
+            OpenAiModel = Cfg("openai_model", "OPENAI_MODEL", "gpt-4o"),
+            GeminiApiKey = Cfg("gemini_api_key", "GEMINI_API_KEY", ""),
+            GeminiApiHost = Cfg("gemini_api_host", "GEMINI_API_HOST", "https://generativelanguage.googleapis.com"),
+            GeminiModel = Cfg("gemini_model", "GEMINI_MODEL", "gemini-2.0-flash"),
+            OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
+            OpenRouterApiHost = Cfg("openrouter_api_host", "OPENROUTER_API_HOST", "https://openrouter.ai"),
+            OpenRouterModel = Cfg("openrouter_model", "OPENROUTER_MODEL", ""),
+            AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
+            AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),
+            AzureOpenAiDeployment = Cfg("azure_openai_deployment", "AZURE_OPENAI_DEPLOYMENT", ""),
+            AzureOpenAiApiVersion = Cfg("azure_openai_api_version", "AZURE_OPENAI_API_VERSION", "2024-02-01"),
             EnsembleSize = int.Parse(Cfg("ensemble_size", "ENSEMBLE_SIZE", "3")),
             EnsembleTemperature = double.Parse(Cfg("ensemble_temperature", "ENSEMBLE_TEMPERATURE", "0.7")),
             MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
             KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
             MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),
-            EnablePositionReview = Cfg("enable_position_review", "ENABLE_POSITION_REVIEW", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
-            PositionStopLossPct = double.Parse(Cfg("position_stop_loss_pct", "POSITION_STOP_LOSS_PCT", "0.20")),
-            TakeProfitPrice = double.Parse(Cfg("take_profit_price", "TAKE_PROFIT_PRICE", "0.95")),
-            ExitEdgeBuffer = double.Parse(Cfg("exit_edge_buffer", "EXIT_EDGE_BUFFER", "0.05")),
-            ReviewReestimateThresholdPct = double.Parse(Cfg("review_reestimate_threshold_pct", "REVIEW_REESTIMATE_THRESHOLD_PCT", "0.10")),
-            ReviewEnsembleSize = int.Parse(Cfg("review_ensemble_size", "REVIEW_ENSEMBLE_SIZE", "3")),
             MaxPositionPct = double.Parse(Cfg("max_position_pct", "MAX_POSITION_PCT", "0.15")),
             MaxTotalExposurePct = double.Parse(Cfg("max_total_exposure_pct", "MAX_TOTAL_EXPOSURE_PCT", "1.00")),
             MaxCategoryExposurePct = double.Parse(Cfg("max_category_exposure_pct", "MAX_CATEGORY_EXPOSURE_PCT", "0.80")),
             DailyStopLossPct = double.Parse(Cfg("daily_stop_loss_pct", "DAILY_STOP_LOSS_PCT", "0.20")),
             MaxDrawdownPct = double.Parse(Cfg("max_drawdown_pct", "MAX_DRAWDOWN_PCT", "0.50")),
             MaxConcurrentPositions = int.Parse(Cfg("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "8")),
+            EnablePositionReview = Cfg("enable_position_review", "ENABLE_POSITION_REVIEW", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
+            PositionStopLossPct = double.Parse(Cfg("position_stop_loss_pct", "POSITION_STOP_LOSS_PCT", "0.20")),
+            TakeProfitPrice = double.Parse(Cfg("take_profit_price", "TAKE_PROFIT_PRICE", "0.95")),
+            ExitEdgeBuffer = double.Parse(Cfg("exit_edge_buffer", "EXIT_EDGE_BUFFER", "0.05")),
+            ReviewReestimateThresholdPct = double.Parse(Cfg("review_reestimate_threshold_pct", "REVIEW_REESTIMATE_THRESHOLD_PCT", "0.10")),
+            ReviewEnsembleSize = int.Parse(Cfg("review_ensemble_size", "REVIEW_ENSEMBLE_SIZE", "3")),
             InitialBankroll = double.Parse(Cfg("initial_bankroll", "INITIAL_BANKROLL", "10000")),
-            AnthropicApiKey = Cfg("anthropic_api_key", "ANTHROPIC_API_KEY", ""),
-            OpenAiApiKey = Cfg("openai_api_key", "OPENAI_API_KEY", ""),
-            OpenAiApiHost = Cfg("openai_api_host", "OPENAI_API_HOST", "https://api.openai.com"),
-            GeminiApiKey = Cfg("gemini_api_key", "GEMINI_API_KEY", ""),
-            GeminiApiHost = Cfg("gemini_api_host", "GEMINI_API_HOST", "https://generativelanguage.googleapis.com"),
-            OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
-            OpenRouterApiHost = Cfg("openrouter_api_host", "OPENROUTER_API_HOST", "https://openrouter.ai"),
-            AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
-            AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),
-            AzureOpenAiDeployment = Cfg("azure_openai_deployment", "AZURE_OPENAI_DEPLOYMENT", ""),
-            AzureOpenAiApiVersion = Cfg("azure_openai_api_version", "AZURE_OPENAI_API_VERSION", "2024-02-01"),
             PolymarketPrivateKey = Cfg("polymarket_private_key", "POLYMARKET_PRIVATE_KEY", ""),
             PolymarketFunderAddress = Cfg("polymarket_funder_address", "POLYMARKET_FUNDER_ADDRESS", ""),
             PolymarketChainId = int.Parse(Cfg("polymarket_chain_id", "POLYMARKET_CHAIN_ID", "137")),
@@ -169,7 +187,6 @@ public sealed class BotConfig
             PolymarketApiKey = Cfg("polymarket_api_key", "POLYMARKET_API_KEY", ""),
             PolymarketApiSecret = Cfg("polymarket_api_secret", "POLYMARKET_API_SECRET", ""),
             PolymarketApiPassphrase = Cfg("polymarket_api_passphrase", "POLYMARKET_API_PASSPHRASE", ""),
-            AnthropicApiHost = Cfg("anthropic_api_host", "ANTHROPIC_API_HOST", ""),
             GammaApiHost = Cfg("gamma_api_host", "GAMMA_API_HOST", ""),
             ClobHost = Cfg("clob_host", "CLOB_HOST", ""),
             ExchangeAddress = Cfg("exchange_address", "EXCHANGE_ADDRESS", ""),

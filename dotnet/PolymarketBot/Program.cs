@@ -100,8 +100,8 @@ log.LogInformation("Mode: {Mode} | Bankroll: ${Bankroll:F2}", mode, config.Initi
 log.LogInformation("Min edge: {MinEdge:P0} | Max position: {MaxPos:P0}", config.MinEdge, config.MaxPositionPct);
 log.LogInformation("Scan interval: {Interval} min | Markets/cycle: {Markets}",
     config.ScanIntervalMinutes, config.MarketsPerCycle);
-var _effectiveModel = !string.IsNullOrEmpty(config.AiModel) ? config.AiModel : config.ClaudeModel;
-log.LogInformation("Ensemble: {Size}x {Model} [{Provider}]", config.EnsembleSize, _effectiveModel, config.AiProvider);
+var _modeLabel = config.MultiProvider ? "multi" : config.AiProvider;
+log.LogInformation("Ensemble: {Size}x [{Mode}]", config.EnsembleSize, _modeLabel);
 log.LogInformation(new string('=', 60));
 
 if (console_)
@@ -167,14 +167,30 @@ var notifier = new Notifier(config, loggerFactory.CreateLogger<Notifier>());
 
 // ── Validate Anthropic API key ───────────────────────────────────
 
-log.LogInformation("Validating {Provider} API key...", config.AiProvider);
+if (config.MultiProvider)
+    log.LogInformation("Validating all configured providers...");
+else
+    log.LogInformation("Validating {Provider} API key...", config.AiProvider);
+
 if (!await estimator.ValidateApiKeyAsync())
 {
-    log.LogError("{Provider} API key is invalid or unauthorized. Exiting.", config.AiProvider);
-    if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: {config.AiProvider} API key invalid. Check config.{RESET}");
+    if (config.MultiProvider)
+    {
+        log.LogError("All configured AI providers failed — no AI available. Exiting.");
+        if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: All AI providers failed. Check config.{RESET}");
+    }
+    else
+    {
+        log.LogError("{Provider} API key is invalid or unauthorized. Exiting.", config.AiProvider);
+        if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: {config.AiProvider} API key invalid. Check config.{RESET}");
+    }
     return 1;
 }
-log.LogInformation("{Provider} API key validated.", config.AiProvider);
+
+if (config.MultiProvider)
+    log.LogInformation("Provider validation complete — at least one provider available.");
+else
+    log.LogInformation("{Provider} API key validated.", config.AiProvider);
 
 // ── Graceful shutdown ───────────────────────────────────────────
 

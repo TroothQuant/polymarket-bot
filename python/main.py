@@ -82,8 +82,8 @@ def main():
     log.info(f"Mode: {mode} | Bankroll: ${config.initial_bankroll:.2f}")
     log.info(f"Min edge: {config.min_edge:.0%} | Max position: {config.max_position_pct:.0%}")
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
-    _effective_model = config.ai_model or config.claude_model
-    log.info(f"Ensemble: {config.ensemble_size}x {_effective_model} [{config.ai_provider}]")
+    _mode_label = "multi" if config.multi_provider else config.ai_provider
+    log.info(f"Ensemble: {config.ensemble_size}x [{_mode_label}]")
     log.info("=" * 60)
 
     if con:
@@ -127,13 +127,24 @@ def main():
     estimator = Estimator(config)
     notifier = Notifier(config)
 
-    log.info(f"Validating {config.ai_provider} API key...")
+    if config.multi_provider:
+        log.info("Validating all configured providers...")
+    else:
+        log.info(f"Validating {config.ai_provider} API key...")
     if not estimator.validate_api_key():
-        log.error(f"{config.ai_provider} API key is invalid or unauthorized. Exiting.")
-        if con:
-            print(f"[{ts()}] {RED}ERROR: {config.ai_provider} API key invalid. Check config.{RESET}")
+        if config.multi_provider:
+            log.error("All configured AI providers failed — no AI available. Exiting.")
+            if con:
+                print(f"[{ts()}] {RED}ERROR: All AI providers failed. Check config.{RESET}")
+        else:
+            log.error(f"{config.ai_provider} API key is invalid or unauthorized. Exiting.")
+            if con:
+                print(f"[{ts()}] {RED}ERROR: {config.ai_provider} API key invalid. Check config.{RESET}")
         sys.exit(1)
-    log.info(f"{config.ai_provider} API key validated.")
+    if config.multi_provider:
+        log.info("Provider validation complete — at least one provider available.")
+    else:
+        log.info(f"{config.ai_provider} API key validated.")
 
     if config.live_trading:
         if not config.polymarket_private_key and not config.polymarket_api_key:

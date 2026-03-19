@@ -313,7 +313,7 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : s }
 // ── Stats row ─────────────────────────────────────────────────────────────
 function renderStats() {
   if (!portfolio) return
-  const { bankroll, initial_bankroll, positions = [], total_realized_pnl, high_water_mark, total_trades, is_halted, daily_start_value } = portfolio
+  const { bankroll, initial_bankroll, positions = [], total_realized_pnl, high_water_mark, total_trades, is_halted } = portfolio
   const totalExposure = positions.reduce((s, p) => s + p.shares * p.current_price, 0)
   const portVal = bankroll + totalExposure
   const unrealPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0)
@@ -808,20 +808,34 @@ const CONFIG_SCHEMA = [
     { key: 'initial_bankroll', label: 'Initial Bankroll', ru: 'Начальный баланс', type: 'number', step: 1 },
   ]},
   { section: 'AI PROVIDER', ru: 'ИИ ПРОВАЙДЕР', fields: [
-    { key: 'ai_provider', label: 'Provider', ru: 'Провайдер', type: 'provider-select' },
-    { key: 'ai_model',    label: 'Model',    ru: 'Модель',    type: 'model-select' },
-    { key: 'anthropic_api_key',          label: 'Anthropic API Key',   ru: 'Ключ Anthropic',   type: 'password', providers: ['anthropic'] },
-    { key: 'anthropic_api_host',         label: 'Anthropic API Host',  ru: 'Хост Anthropic',   type: 'text',     providers: ['anthropic'] },
-    { key: 'openai_api_key',             label: 'OpenAI API Key',      ru: 'Ключ OpenAI',      type: 'password', providers: ['openai'] },
-    { key: 'openai_api_host',            label: 'OpenAI API Host',     ru: 'Хост OpenAI',      type: 'text',     providers: ['openai'] },
-    { key: 'gemini_api_key',             label: 'Gemini API Key',      ru: 'Ключ Gemini',       type: 'password', providers: ['gemini'] },
-    { key: 'gemini_api_host',            label: 'Gemini API Host',     ru: 'Хост Gemini',       type: 'text',     providers: ['gemini'] },
-    { key: 'openrouter_api_key',         label: 'OpenRouter API Key',  ru: 'Ключ OpenRouter',   type: 'password', providers: ['openrouter'] },
-    { key: 'openrouter_api_host',        label: 'OpenRouter API Host', ru: 'Хост OpenRouter',   type: 'text',     providers: ['openrouter'] },
-    { key: 'azure_openai_api_key',       label: 'Azure API Key',       ru: 'Ключ Azure',       type: 'password', providers: ['azure_openai'] },
-    { key: 'azure_openai_endpoint',      label: 'Azure Endpoint',      ru: 'Эндпоинт Azure',   type: 'text',     providers: ['azure_openai'] },
-    { key: 'azure_openai_deployment',    label: 'Azure Deployment',    ru: 'Деплоймент Azure', type: 'text',     providers: ['azure_openai'] },
-    { key: 'azure_openai_api_version',   label: 'Azure API Version',   ru: 'Версия API Azure', type: 'text',     providers: ['azure_openai'] },
+    { key: 'ai_provider',   label: 'Active Provider (single mode)', ru: 'Провайдер (один)',       type: 'provider-select' },
+    { key: 'multi_provider',label: 'Query All Providers',           ru: 'Опросить все провайдеры', type: 'bool' },
+  ]},
+  { section: 'ANTHROPIC', ru: 'ANTHROPIC', fields: [
+    { key: 'anthropic_api_key',  label: 'API Key',  ru: 'API ключ',  type: 'password' },
+    { key: 'anthropic_api_host', label: 'API Host', ru: 'API хост',  type: 'text' },
+    { key: 'anthropic_model',    label: 'Model',    ru: 'Модель',    type: 'model-select', loadFrom: 'anthropic' },
+  ]},
+  { section: 'OPENAI', ru: 'OPENAI', fields: [
+    { key: 'openai_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
+    { key: 'openai_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
+    { key: 'openai_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'openai' },
+  ]},
+  { section: 'GEMINI', ru: 'GEMINI', fields: [
+    { key: 'gemini_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
+    { key: 'gemini_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
+    { key: 'gemini_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'gemini' },
+  ]},
+  { section: 'OPENROUTER', ru: 'OPENROUTER', fields: [
+    { key: 'openrouter_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
+    { key: 'openrouter_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
+    { key: 'openrouter_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'openrouter' },
+  ]},
+  { section: 'AZURE OPENAI', ru: 'AZURE OPENAI', fields: [
+    { key: 'azure_openai_api_key',     label: 'API Key',      ru: 'API ключ',      type: 'password' },
+    { key: 'azure_openai_endpoint',    label: 'Endpoint',     ru: 'Эндпоинт',      type: 'text' },
+    { key: 'azure_openai_deployment',  label: 'Deployment',   ru: 'Деплоймент',    type: 'text' },
+    { key: 'azure_openai_api_version', label: 'API Version',  ru: 'Версия API',    type: 'text' },
   ]},
   { section: 'API KEYS', ru: 'API КЛЮЧИ', fields: [
     { key: 'polymarket_private_key',    label: 'PK Private Key',      ru: 'Приватный ключ',      type: 'password' },
@@ -902,6 +916,8 @@ const PROVIDER_KEY_FIELDS = {
 
 const PROVIDER_HOST_FIELDS = {
   openai:       'openai_api_host',
+  gemini:       'gemini_api_host',
+  openrouter:   'openrouter_api_host',
   azure_openai: 'azure_openai_endpoint',
 }
 
@@ -953,15 +969,18 @@ async function openConfig() {
           </div>`
         const btn = group.querySelector('#load-models-btn')
         const sel = group.querySelector('select')
+        // loadFrom = fixed provider for this field; fallback = currently selected provider
+        const fieldProvider = f.loadFrom || null
         btn.addEventListener('click', async () => {
           btn.textContent = '⟳'; btn.disabled = true
-          const provider = form.querySelector('[data-key="ai_provider"]')?.value || 'anthropic'
+          const provider = fieldProvider || form.querySelector('[data-key="ai_provider"]')?.value || 'anthropic'
+          // Always use the key/host fields for the specific provider being loaded
           const keyField = PROVIDER_KEY_FIELDS[provider] || 'anthropic_api_key'
-          const apiKey = form.querySelector(`[data-key="${keyField}"]`)?.value || ''
-          const hostField = PROVIDER_HOST_FIELDS[provider]
-          const host = hostField ? (form.querySelector(`[data-key="${hostField}"]`)?.value || '') : ''
-          const deployment = form.querySelector('[data-key="azure_openai_deployment"]')?.value || ''
-          const apiVersion = form.querySelector('[data-key="azure_openai_api_version"]')?.value || ''
+          const hostField = PROVIDER_HOST_FIELDS[provider] || null
+          const apiKey = document.querySelector(`[data-key="${keyField}"]`)?.value || ''
+          const host = hostField ? (document.querySelector(`[data-key="${hostField}"]`)?.value || '') : ''
+          const deployment = document.querySelector('[data-key="azure_openai_deployment"]')?.value || ''
+          const apiVersion = document.querySelector('[data-key="azure_openai_api_version"]')?.value || ''
           try {
             const result = await api.fetchAiModels({ provider, apiKey, host, deployment, apiVersion })
             if (result.error) { btn.textContent = '✗'; setTimeout(() => { btn.textContent = '↺ Load'; btn.disabled = false }, 2000); return }

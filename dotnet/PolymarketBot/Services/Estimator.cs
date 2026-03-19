@@ -33,6 +33,15 @@ public sealed class Estimator
 
     public async Task<Estimate?> EstimateAsync(MarketInfo market, CancellationToken ct = default)
     {
+        return _config.MultiProvider
+            ? await EstimateMultiAsync(market, ct)
+            : await EstimateSingleAsync(market, ct);
+    }
+
+    // ── Single-provider estimation ─────────────────────────────────────────
+
+    private async Task<Estimate?> EstimateSingleAsync(MarketInfo market, CancellationToken ct)
+    {
         var rawEstimates = new List<double>();
         var totalInput = 0;
         var totalOutput = 0;
@@ -40,39 +49,123 @@ public sealed class Estimator
 
         for (var i = 0; i < _config.EnsembleSize; i++)
         {
-            var result = await SingleCallAsync(market, ct);
+            var result = await SingleCallAsync(market, _config.AiProvider, ct);
             if (result is null) continue;
-
             rawEstimates.Add(result.Value.Probability);
-            if (string.IsNullOrEmpty(firstReasoning))
-                firstReasoning = result.Value.Reasoning;
+            if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = result.Value.Reasoning;
             totalInput += result.Value.InputTokens;
             totalOutput += result.Value.OutputTokens;
         }
 
-        if (rawEstimates.Count < 2)
+        return BuildEstimate(market, rawEstimates, totalInput, totalOutput, firstReasoning);
+    }
+
+    // ── Multi-provider estimation ──────────────────────────────────────────
+
+    private async Task<Estimate?> EstimateMultiAsync(MarketInfo market, CancellationToken ct)
+    {
+        var configured = GetConfiguredProviders();
+        if (configured.Count == 0)
         {
-            _log.LogWarning("Only {Count} valid estimates for: {Question}",
-                rawEstimates.Count, Truncate(market.Question, 60));
-            if (rawEstimates.Count == 0) return null;
+            _log.LogWarning("multi_provider=true but no providers configured — falling back to single");
+            return await EstimateSingleAsync(market, ct);
         }
 
-        // Trimmed mean: drop highest and lowest if enough samples
-        List<double> trimmed;
-        if (rawEstimates.Count >= 4)
+        var callsPer = Math.Max(1, (int)Math.Ceiling((double)_config.EnsembleSize / configured.Count));
+
+        // Per-provider results: (provider, probs, inputTokens, outputTokens, reasoning)
+        var providerResults = new List<(string Provider, List<double> Probs, int Input, int Output, string Reasoning)>();
+        var totalInput = 0;
+        var totalOutput = 0;
+        var firstReasoning = "";
+
+        foreach (var provider in configured)
         {
-            var sorted = rawEstimates.OrderBy(x => x).ToList();
-            trimmed = sorted.Skip(1).Take(sorted.Count - 2).ToList();
+            var probs = new List<double>();
+            var pInput = 0; var pOutput = 0; var pReasoning = "";
+
+            for (var i = 0; i < callsPer; i++)
+            {
+                var result = await SingleCallAsync(market, provider, ct);
+                if (result is null) continue;
+                probs.Add(result.Value.Probability);
+                pInput += result.Value.InputTokens;
+                pOutput += result.Value.OutputTokens;
+                if (string.IsNullOrEmpty(pReasoning)) pReasoning = result.Value.Reasoning;
+            }
+
+            if (probs.Count == 0) { _log.LogWarning("  {Provider}: no valid estimates — skipped", provider); continue; }
+            providerResults.Add((provider, probs, pInput, pOutput, pReasoning));
+            totalInput += pInput; totalOutput += pOutput;
+            if (string.IsNullOrEmpty(firstReasoning)) firstReasoning = pReasoning;
         }
-        else
-        {
-            trimmed = rawEstimates;
-        }
+
+        if (providerResults.Count == 0) return null;
+
+        // Score: conviction × confidence, where conviction = |mean - marketPrice|, confidence = 1/(std+0.01)
+        var marketPrice = (market.OutcomeYesPrice + (1 - market.OutcomeNoPrice)) / 2;
+        var scored = providerResults
+            .Select(r =>
+            {
+                var mean = r.Probs.Average();
+                var std = r.Probs.Count > 1 ? StdDev(r.Probs) : 0.0;
+                var score = Math.Abs(mean - marketPrice) * (1.0 / (std + 0.01));
+                return (r.Provider, Mean: mean, Std: std, Score: score);
+            })
+            .OrderByDescending(x => x.Score)
+            .ToList();
+
+        var winner = scored[0].Provider;
+
+        // Log breakdown
+        var parts = scored.Select(s =>
+            $"{(s.Provider == winner ? "⭐" : "  ")}{s.Provider}={s.Mean:P0}(±{s.Std:F2},s={s.Score:F3})");
+        _log.LogInformation("Multi-provider [{Question}] | {Breakdown}",
+            Truncate(market.Question, 35), string.Join(" | ", parts));
+
+        // Final estimate: trimmed mean of per-provider means (each provider counts equally)
+        var providerMeans = scored.Select(s => s.Mean).ToList();
+        return BuildEstimate(market, providerMeans, totalInput, totalOutput, firstReasoning,
+            note: $"multi({scored.Count} providers, ⭐{winner})");
+    }
+
+    private List<string> GetConfiguredProviders()
+    {
+        var out_ = new List<string>();
+        if (!string.IsNullOrEmpty(_config.AnthropicApiKey)) out_.Add("anthropic");
+        if (!string.IsNullOrEmpty(_config.OpenAiApiKey))    out_.Add("openai");
+        if (!string.IsNullOrEmpty(_config.GeminiApiKey))    out_.Add("gemini");
+        if (!string.IsNullOrEmpty(_config.OpenRouterApiKey)) out_.Add("openrouter");
+        if (!string.IsNullOrEmpty(_config.AzureOpenAiApiKey) &&
+            !string.IsNullOrEmpty(_config.AzureOpenAiEndpoint) &&
+            !string.IsNullOrEmpty(_config.AzureOpenAiDeployment)) out_.Add("azure_openai");
+        return out_;
+    }
+
+    private string GetModelForProvider(string provider) => provider switch
+    {
+        "anthropic"    => !string.IsNullOrEmpty(_config.AnthropicModel)  ? _config.AnthropicModel  : "claude-sonnet-4-6",
+        "openai"       => !string.IsNullOrEmpty(_config.OpenAiModel)     ? _config.OpenAiModel     : "gpt-4o",
+        "gemini"       => !string.IsNullOrEmpty(_config.GeminiModel)     ? _config.GeminiModel     : "gemini-2.0-flash",
+        "openrouter"   => _config.OpenRouterModel,
+        "azure_openai" => _config.AzureOpenAiDeployment,
+        _              => _config.AnthropicModel,
+    };
+
+    private Estimate? BuildEstimate(MarketInfo market, List<double> rawEstimates,
+        int totalInput, int totalOutput, string firstReasoning, string note = "")
+    {
+        if (rawEstimates.Count == 0) return null;
+        if (rawEstimates.Count < 2)
+            _log.LogWarning("Only {Count} valid estimates for: {Question}", rawEstimates.Count, Truncate(market.Question, 60));
+
+        List<double> trimmed = rawEstimates.Count >= 4
+            ? rawEstimates.OrderBy(x => x).Skip(1).Take(rawEstimates.Count - 2).ToList()
+            : rawEstimates;
 
         var fairProb = trimmed.Average();
         var confidence = rawEstimates.Count > 1 ? StdDev(rawEstimates) : 1.0;
 
-        // Confidence filter: skip if ensemble disagreement is too high
         if (rawEstimates.Count >= 2 && confidence > _config.MaxEstimateStd)
         {
             _log.LogInformation("SKIP (low confidence): {Question} std={Std:F3} > max={Max:F3}",
@@ -80,8 +173,9 @@ public sealed class Estimator
             return null;
         }
 
-        _log.LogInformation("Estimate: {Question} -> {Prob:P2} (n={Count}, std={Std:F3})",
-            Truncate(market.Question, 50), fairProb, rawEstimates.Count, confidence);
+        var label = string.IsNullOrEmpty(note) ? "" : $"[{note}] ";
+        _log.LogInformation("Estimate: {Label}{Question} -> {Prob:P2} (n={Count}, std={Std:F3})",
+            label, Truncate(market.Question, 50), fairProb, rawEstimates.Count, confidence);
 
         return new Estimate
         {
@@ -96,7 +190,7 @@ public sealed class Estimator
         };
     }
 
-    private async Task<CallResult?> SingleCallAsync(MarketInfo market, CancellationToken ct)
+    private async Task<CallResult?> SingleCallAsync(MarketInfo market, string provider, CancellationToken ct)
     {
         // Retry delays for transient overload (429 / 529): 10s, 20s, 40s
         int[] backoffMs = { 10_000, 20_000, 40_000 };
@@ -105,7 +199,7 @@ public sealed class Estimator
         {
             try
             {
-                var (status, body) = await MakeProviderRequestAsync(market, ct);
+                var (status, body) = await MakeProviderRequestAsync(market, provider, ct);
 
                 if (status == 429 || status == 529)
                 {
@@ -146,19 +240,19 @@ public sealed class Estimator
         return null;
     }
 
-    private string ActiveModel =>
-        !string.IsNullOrEmpty(_config.AiModel) ? _config.AiModel : _config.ClaudeModel;
+    // ActiveModel is the model for the currently configured single provider (used as fallback)
+    private string ActiveModel => GetModelForProvider(_config.AiProvider.ToLowerInvariant());
 
-    private async Task<(int status, string body)> MakeProviderRequestAsync(MarketInfo market, CancellationToken ct)
+    private async Task<(int status, string body)> MakeProviderRequestAsync(MarketInfo market, string provider, CancellationToken ct)
     {
         var userPrompt = BuildUserPrompt(market);
-        return _config.AiProvider.ToLowerInvariant() switch
+        return provider.ToLowerInvariant() switch
         {
             "gemini"       => await MakeGeminiRequestAsync(userPrompt, ct),
             "openai"       => await MakeOpenAiCompatRequestAsync("openai", userPrompt, ct),
             "openrouter"   => await MakeOpenAiCompatRequestAsync("openrouter", userPrompt, ct),
             "azure_openai" => await MakeOpenAiCompatRequestAsync("azure_openai", userPrompt, ct),
-            _              => await MakeAnthropicRequestAsync(userPrompt, ct),  // default: anthropic
+            _              => await MakeAnthropicRequestAsync(userPrompt, ct),
         };
     }
 
@@ -168,7 +262,7 @@ public sealed class Estimator
     {
         var body = JsonSerializer.Serialize(new
         {
-            model = ActiveModel,
+            model = GetModelForProvider("anthropic"),
             max_tokens = _config.MaxEstimateTokens,
             temperature = _config.EnsembleTemperature,
             system = SystemPrompt,
@@ -201,7 +295,7 @@ public sealed class Estimator
     private async Task<(int, string)> MakeOpenAiCompatRequestAsync(string provider, string userPrompt, CancellationToken ct)
     {
         string url;
-        var model = ActiveModel;
+        var model = GetModelForProvider(provider);
         var req = new HttpRequestMessage(HttpMethod.Post, "");
 
         if (provider == "openai")
@@ -262,7 +356,7 @@ public sealed class Estimator
 
     private async Task<(int, string)> MakeGeminiRequestAsync(string userPrompt, CancellationToken ct)
     {
-        var model = ActiveModel;
+        var model = GetModelForProvider("gemini");
         var gemHost = string.IsNullOrEmpty(_config.GeminiApiHost) ? "https://generativelanguage.googleapis.com" : _config.GeminiApiHost.TrimEnd('/');
         var url = $"{gemHost}/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
         var body = JsonSerializer.Serialize(new
@@ -367,14 +461,34 @@ public sealed class Estimator
     /// </summary>
     public async Task<bool> ValidateApiKeyAsync(CancellationToken ct = default)
     {
+        if (_config.MultiProvider)
+        {
+            var configured = GetConfiguredProviders();
+            if (configured.Count == 0) { _log.LogError("multi_provider=true but no API keys configured"); return false; }
+            var results = new Dictionary<string, bool>();
+            foreach (var p in configured)
+            {
+                var ok = await ValidateProviderAsync(p, ct);
+                results[p] = ok;
+                _log.LogInformation("  {Status} {Provider}", ok ? "✓" : "✗", p);
+            }
+            if (!results.Values.Any(v => v)) { _log.LogError("All configured providers failed validation"); return false; }
+            var failed = results.Where(kv => !kv.Value).Select(kv => kv.Key).ToList();
+            if (failed.Count > 0) _log.LogWarning("Some providers failed: {Failed} — continuing", string.Join(", ", failed));
+            return true;
+        }
+        return await ValidateProviderAsync(_config.AiProvider.ToLowerInvariant(), ct);
+    }
+
+    private async Task<bool> ValidateProviderAsync(string provider, CancellationToken ct)
+    {
         try
         {
-            var provider = _config.AiProvider.ToLowerInvariant();
             HttpRequestMessage req;
 
             if (provider == "gemini")
             {
-                var model = ActiveModel;
+                var model = GetModelForProvider("gemini");
                 var gemHost = string.IsNullOrEmpty(_config.GeminiApiHost) ? "https://generativelanguage.googleapis.com" : _config.GeminiApiHost.TrimEnd('/');
                 var url = $"{gemHost}/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
                 var body = JsonSerializer.Serialize(new
@@ -397,7 +511,7 @@ public sealed class Estimator
                 };
                 var body = JsonSerializer.Serialize(new
                 {
-                    model = provider == "azure_openai" ? _config.AzureOpenAiDeployment : ActiveModel,
+                    model = GetModelForProvider(provider),
                     messages = new[] { new { role = "user", content = "hi" } },
                     max_tokens = 1
                 });
@@ -412,7 +526,7 @@ public sealed class Estimator
                 var host = string.IsNullOrEmpty(_config.AnthropicApiHost) ? "https://api.anthropic.com" : _config.AnthropicApiHost;
                 var body = JsonSerializer.Serialize(new
                 {
-                    model = ActiveModel,
+                    model = GetModelForProvider("anthropic"),
                     max_tokens = 1,
                     messages = new[] { new { role = "user", content = "hi" } }
                 });
@@ -431,7 +545,7 @@ public sealed class Estimator
             {
                 var respBody = await resp.Content.ReadAsStringAsync(ct);
                 _log.LogError("{Provider} API key invalid (HTTP {Status}): {Body}",
-                    _config.AiProvider, status, respBody[..Math.Min(respBody.Length, 200)]);
+                    provider, status, respBody[..Math.Min(respBody.Length, 200)]);
                 return false;
             }
             // Gemini returns 400 for invalid keys — check response body
