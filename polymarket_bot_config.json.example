@@ -1,0 +1,93 @@
+{
+  "_NOTES": [
+    "Copy this file to polymarket_bot_config.json and fill in your credentials.",
+    "Config priority: CLI arg > env var > this file > code default.",
+    "All keys can also be set as uppercase env vars (e.g. ANTHROPIC_API_KEY).",
+    "For paper trading, only anthropic_api_key + API hosts are required.",
+    "For live trading, also add polymarket_private_key + funder_address + exchange addresses.",
+    "Remove the _NOTES key before use (or leave it — it's ignored)."
+  ],
+
+  "____SECTION_REQUIRED____": "── Required credentials ──────────────────────────────────────────────",
+
+  "anthropic_api_key": "sk-ant-...",
+  "anthropic_api_host": "https://api.anthropic.com",
+  "gamma_api_host": "https://gamma-api.polymarket.com",
+  "clob_host": "https://clob.polymarket.com",
+
+  "____SECTION_MODE____": "── Trading mode ──────────────────────────────────────────────────────",
+
+  "live_trading": false,
+  "initial_bankroll": 100,
+
+  "____SECTION_LIVE____": "── Live trading credentials (only needed when live_trading=true) ───────",
+
+  "polymarket_private_key": "0x...",
+  "polymarket_funder_address": "0x...",
+  "polymarket_signature_type": 0,
+  "exchange_address": "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+  "neg_risk_exchange_address": "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+
+  "____SECTION_AUTOCLAIM____": "── Auto-claim won positions on-chain (.NET only) ──────────────────────",
+
+  "auto_claim": true,
+  "ctf_address": "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+  "usdc_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+  "polygon_rpc_url": "https://polygon-rpc.com",
+
+  "____SECTION_SCAN____": "── Market scanning / filtering ───────────────────────────────────────",
+
+  "scan_interval_minutes": 10,
+  "markets_per_cycle": 20,
+  "min_liquidity": 10000,
+  "min_volume_24hr": 500,
+  "min_time_to_resolution_hours": 48,
+  "min_market_price": 0.10,
+  "max_spread": 0.04,
+
+  "____SECTION_ESTIMATION____": "── Claude ensemble estimation ────────────────────────────────────────",
+
+  "claude_model": "claude-sonnet-4-20250514",
+  "ensemble_size": 3,
+  "ensemble_temperature": 0.7,
+  "max_estimate_tokens": 1024,
+  "max_estimate_std": 0.10,
+
+  "____SECTION_SIZING____": "── Position sizing ───────────────────────────────────────────────────",
+
+  "min_edge": 0.10,
+  "kelly_fraction": 0.20,
+  "min_trade_usd": 0.5,
+
+  "____SECTION_RISK____": "── Risk limits ───────────────────────────────────────────────────────",
+
+  "max_position_pct": 0.15,
+  "max_total_exposure_pct": 1.00,
+  "max_category_exposure_pct": 0.80,
+  "daily_stop_loss_pct": 0.20,
+  "max_drawdown_pct": 0.50,
+  "max_concurrent_positions": 10,
+
+  "____SECTION_EXITS____": "── Position exit rules ───────────────────────────────────────────────",
+
+  "enable_position_review": true,
+  "position_stop_loss_pct": 0.25,
+  "take_profit_price": 0.95,
+  "exit_edge_buffer": 0.05,
+  "review_reestimate_threshold_pct": 0.10,
+  "review_ensemble_size": 3,
+
+  "____SECTION_EMAIL____": "── Email notifications ───────────────────────────────────────────────",
+
+  "email_enabled": false,
+  "email_smtp_host": "smtp.gmail.com",
+  "email_smtp_port": 587,
+  "email_use_tls": true,
+  "email_user": "yourbot@gmail.com",
+  "email_password": "xxxx-xxxx-xxxx-xxxx",
+  "email_to": "you@example.com",
+
+  "____SECTION_DATA____": "── Data storage ──────────────────────────────────────────────────────",
+
+  "data_dir": "../data"
+}

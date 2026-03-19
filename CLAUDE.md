@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Polymarket trading bot that uses Claude ensemble estimation to find and trade mispriced binary prediction markets. Every cycle it scans markets, estimates fair probabilities via multiple Claude calls (trimmed mean), finds mispricing > 8%, sizes positions with fractional Kelly criterion, and executes. The agent pays for its own API inference from its bankroll — if bankroll hits $0, it stops.
+Polymarket trading bot that uses Claude ensemble estimation to find and trade mispriced binary prediction markets. Every cycle it validates credentials, checks for ghost positions, reviews open positions (with re-estimation and cooldown logic), scans markets, estimates fair probabilities via multiple Claude calls (trimmed mean + confidence filter), sizes positions with fractional Kelly criterion, and executes. The agent pays for its own API inference from its bankroll — if portfolio value drops below $1, it stops.
 
 Two implementations: **Python** (`python/`) and **.NET 8** (`dotnet/PolymarketBot/`). Both share the same logic, config, and data formats.
 
@@ -106,14 +106,15 @@ dotnet/PolymarketBot/
 
 **Data flow per cycle (both implementations):**
 
-1. **Balance sync** — fetch on-chain USDC every cycle, sync bankroll in both directions (up = resolved positions returned USDC; down = fees/failed orders)
-2. **Position review** — fetch midpoint prices, check exit rules (stop-loss/take-profit/edge-gone), execute SELLs, top-up-and-sell tiny positions
-3. `MarketScanner.Scan()` → list of `MarketInfo` (filtered by liquidity, volume, time-to-resolution)
-4. `Estimator.Estimate()` → `Estimate` per market (ensemble of N Claude calls, trimmed mean)
-5. `Portfolio.GenerateSignal()` → `Signal` when edge > `min_edge` (8% default)
-6. `Portfolio.CheckRisk()` → validates all risk limits before execution
-7. `PaperTrader/LiveTrader.Execute()` → `Trade` record + `Position` opened
-8. `Persistence` → save snapshot + append trade to log
+1. **Balance sync** — fetch on-chain USDC every cycle, sync bankroll in both directions
+2. **Ghost check** — verify tracked positions have on-chain tokens; write off strays (`exit_reason="ghost"`)
+3. **Position review** — fetch midpoint prices, check exit rules (stop-loss/take-profit/edge-gone), optionally re-estimate if price moved >10%, execute SELLs, top-up-and-sell tiny positions
+4. `MarketScanner.Scan()` → list of `MarketInfo` (filtered by liquidity, volume, spread, time-to-resolution)
+5. `Estimator.Estimate()` → `Estimate` per market (ensemble of N Claude calls, trimmed mean, confidence filter)
+6. `Portfolio.GenerateSignal()` → `Signal` when edge > `min_edge` (10% default)
+7. `Portfolio.CheckRisk()` → validates 5-layer risk limits + cooldown (2 cycles after any close)
+8. `PaperTrader/LiveTrader.Execute()` → `Trade` record + `Position` opened
+9. `Persistence` → save snapshot + append trade to log
 
 **External APIs:**
 - Gamma API (`gamma-api.polymarket.com/events`) — market discovery with pagination
@@ -124,29 +125,34 @@ dotnet/PolymarketBot/
 
 - **Binary markets only** — filters out non-binary outcomes in market parsing
 - **Ensemble estimation** — N independent Claude calls at temperature 0.7, trimmed mean reduces variance
-- **Estimator prompt** asks Claude to output `{"probability": 0.XX, "reasoning": "..."}` — does NOT show current market price to avoid anchoring
+- **Confidence filter** — if ensemble std dev > `max_estimate_std` (default 10%), market is skipped: `SKIP (low confidence)`
+- **Spread filter** — markets with bid-ask spread > `max_spread` (default 4¢) are skipped: thin liquidity, poor fills
+- **Estimator prompt** includes current market price as a Bayesian prior — Claude is told to treat market consensus as an anchor and only deviate with strong specific reasoning
+- **API key validation at startup** — both implementations make a 1-token test call to Anthropic before starting. HTTP 401 → exit immediately with clear error. Network errors → warn and continue (transient).
+- **Ghost position detection** — each cycle (live only), actual on-chain conditional token balance is checked via CLOB `/balance-allowance`. Balance < 0.1 → ghost: write off with `exit_reason="ghost"`, email notification, cooldown entry.
+- **Position cooldown** — after any close (stop-loss, take-profit, edge-gone, resolved, ghost), blocks re-entry for 2 scan cycles. Tracked in `_recently_closed` dict. Not persisted — resets on restart.
+- **Re-estimation during review** — if a position's price moves > `review_reestimate_threshold_pct` (10%) since entry, Claude is re-queried with `review_ensemble_size` (3) calls. Updates `fair_estimate_at_entry` before edge-gone logic runs.
 - **Keyword-based categorization** (`CATEGORY_KEYWORDS` in scanner) — used for per-category exposure limits
 - **Gamma API returns JSON-encoded strings** inside JSON for `outcomes`, `outcomePrices`, and `clobTokenIds` — parsing handles both string and list forms
-- **Risk is layered:** per-position (15%), per-category (80%), total exposure (100%), daily stop-loss (20%), max drawdown (50%)
+- **Risk is layered:** per-position (15%), per-category (80%), total exposure (100%), daily stop-loss (20%), max drawdown (50%), plus cooldown
 - **Portfolio value** for stop-loss/drawdown = bankroll + total open position value (deployed capital isn't a loss)
-- **Config file** `polymarket_bot_config.json` at project root (not tracked by git). Loaded by both Python (`Path(__file__).parent.parent / "polymarket_bot_config.json"`) and .NET (`../../polymarket_bot_config.json` relative to CWD). `CONFIG_FILE` env var overrides path. Priority: CLI arg → env var → config file → code default
-- **Email notifications** — `Notifier` class (python/notifier.py, dotnet/.../Notifier.cs) sends emails on: started, trade, sell, topup+sell, resolved, halted, daily_reset, error, stopped. Errors silently swallowed — email failure never crashes bot. Use STARTTLS (port 587) or SMTP_SSL (port 465) based on `email_use_tls`
+- **Config file** `polymarket_bot_config.json` at project root (not tracked by git). See `polymarket_bot_config.json.example` for annotated template. `CONFIG_FILE` env var overrides path. Priority: CLI arg → env var → config file → code default
+- **HTML email notifications** — all events use color-coded HTML templates. Events: started, trade, sell, topup+sell, ghost_removed, resolved, halted, daily_reset, error, stopped. Errors silently swallowed.
 - **CLI args** override env vars/config for risk params: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`
 - **Agent pays for inference** — API token costs are deducted from bankroll each cycle
 - **Atomic persistence** — portfolio.json written via tmp+rename to avoid corruption on crash
 - **Polygon chain** (chain ID 137) for Polymarket settlement
-- **Live trading** uses GTC (Good-Till-Cancelled) limit orders. BUY price = midpoint + 2 tick sizes (crosses the spread for immediate taker fills). Poll 5×3s = 15s for MATCHED status, cancel if unfilled
-- **Position review** each cycle: stop-loss (>30% drop), take-profit (price≥0.95), edge-gone (market past fair estimate). Penny positions (<$0.01) skipped — unsellable on CLOB
-- **Top-up-and-sell** for tiny positions (<5 tokens) with exit signals: BUY 5 tokens (CLOB minimum) then SELL all. If BUY fills but SELL doesn't, position becomes sellable next cycle. Skipped if bankroll < topup cost
-- **SELL orders** use Side=1, makerAmount=tokens, takerAmount=USDC (reversed from BUY). Minimum 5 tokens enforced
-- **Agent survival**: estimation loop stops when bankroll < $0.30 (API reserve guard) — bot keeps running for position review. Agent truly "dead" only when `bankroll + TotalExposure() < $1`. `IsHalted` is auto-cleared on restart if portfolio value is healthy (transient low-USDC halts don't persist)
-- **Scan skip threshold** = `max(MinTradeUsd, MaxPositionPct × bankroll)` — based on free cash only, not portfolio value, to avoid false blocks when most capital is locked in positions. Default `MinTradeUsd = $0.50` (≈ CLOB minimum: 5 tokens)
+- **Live trading** uses GTC (Good-Till-Cancelled) limit orders. BUY price = midpoint + 2 ticks (crosses spread for immediate taker fills). SELL price = midpoint − 2 ticks (symmetric aggression). Poll 5×3s = 15s for MATCHED status, cancel if unfilled.
+- **Position review** each cycle: stop-loss (>25% drop), take-profit (price≥0.95), edge-gone (market past fair estimate). Penny positions (<$0.01) skipped — unsellable on CLOB.
+- **Top-up-and-sell** for tiny positions (<5 tokens) with exit signals: BUY 5 tokens (CLOB minimum) then SELL all. Skipped if bankroll < topup cost.
+- **SELL orders** use Side=1, makerAmount=tokens, takerAmount=USDC (reversed from BUY). Minimum 5 tokens enforced.
+- **Agent survival**: estimation loop stops when bankroll < $0.30 (API reserve guard) — bot keeps running for position review. Agent truly "dead" only when `bankroll + TotalExposure() < $1`. `IsHalted` auto-cleared on restart if portfolio value is healthy.
+- **Scan skip threshold** = `max(MinTradeUsd, MaxPositionPct × bankroll)` — based on free cash only, not portfolio value.
 - **.NET version** uses direct HttpClient calls to Anthropic REST API (no SDK dependency)
 - **.NET CLOB auth** implements EIP-712 signing (ClobAuth struct for L1, Order struct for orders) + HMAC-SHA256 for L2, using Nethereum.Signer for Keccak/ECDSA
-- **No hardcoded URLs or contract addresses** — all endpoints/contracts come from env vars
-- **Auto-claim** (.NET only) — when a WON position is detected in the position review loop, `ClobApiClient.RedeemWinningPositionAsync()` submits a raw EIP-155 transaction to Polygon calling `CTF.redeemPositions(collateral, parentCollectionId, conditionId, indexSets)`. Calldata is ABI-encoded manually (196 bytes). Signing reuses existing `EthECKey` + Keccak — no new NuGet packages. Requires `ctf_address`, `usdc_address`, `polygon_rpc_url` in config. Controlled by `auto_claim` (default `true`)
-- **Anthropic 429/529 retry** — `Estimator.SingleCallAsync` retries up to 3 times on rate-limit (429) or overload (529) errors, with exponential backoff 10s → 20s → 40s. After max retries returns null (market skipped)
-- **SKIP log clarity** — `Program.cs` distinguishes two null-signal reasons: "SKIP (bankroll < min)" when edge IS sufficient but position size is below CLOB minimum (5 tokens), vs "SKIP (no edge)" when edge is genuinely below threshold. Console shows "TOO SMALL: need $X, have $Y" in the former case
+- **Auto-claim** (.NET only) — when a WON position is detected, `ClobApiClient.RedeemWinningPositionAsync()` submits a raw EIP-155 transaction to Polygon calling `CTF.redeemPositions`. ABI-encoded manually (196 bytes). Requires `ctf_address`, `usdc_address`, `polygon_rpc_url` in config. Controlled by `auto_claim` (default `true`).
+- **Anthropic 429/529 retry** — `Estimator.SingleCallAsync` retries up to 3 times with backoff 10s → 20s → 40s. After max retries returns null (market skipped).
+- **SKIP log clarity** — distinguishes "SKIP (bankroll < min)" (edge sufficient, size below CLOB minimum) vs "SKIP (no edge)" (edge below threshold). Console shows "TOO SMALL: need $X, have $Y".
 
 ## Dashboard (`dashboard/`)
 

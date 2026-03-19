@@ -223,6 +223,47 @@ public sealed class Estimator
         return Math.Sqrt(sumSq / (values.Count - 1));
     }
 
+    /// <summary>
+    /// Makes a minimal test call to validate the API key. Returns false on HTTP 401 (invalid key).
+    /// Other errors (network, rate-limit) return true so a transient failure doesn't block startup.
+    /// </summary>
+    public async Task<bool> ValidateApiKeyAsync(CancellationToken ct = default)
+    {
+        var requestBody = new
+        {
+            model = _config.ClaudeModel,
+            max_tokens = 1,
+            messages = new[] { new { role = "user", content = "hi" } }
+        };
+
+        var json = JsonSerializer.Serialize(requestBody);
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{_config.AnthropicApiHost}/v1/messages")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", _config.AnthropicApiKey);
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        try
+        {
+            var resp = await _http.SendAsync(request, ct);
+            if ((int)resp.StatusCode == 401)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                _log.LogError("Anthropic API key is invalid (HTTP 401): {Body}", body);
+                return false;
+            }
+            // 400, 200, anything else → key is accepted by Anthropic
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Network errors, DNS failures, etc. — don't block startup; first real call will surface the issue
+            _log.LogWarning("API key validation network error: {Error} — continuing", ex.Message);
+            return true;
+        }
+    }
+
     private static string Truncate(string s, int maxLen)
         => s.Length <= maxLen ? s : s[..maxLen] + "...";
 

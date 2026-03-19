@@ -1,96 +1,84 @@
 # Bot Memory
 
-Running notes between Claude Code sessions. Not a changelog — just current state, known issues, and context that's useful to restore quickly.
+Running notes between Claude Code sessions. Not a changelog — just current state, known issues, and context useful to restore quickly.
 
 ---
 
-## Current State (as of 2026-02-25)
+## Current State (as of 2026-03-19)
 
 - **Mode:** LIVE on Polygon (chain ID 137)
-- **Wallet:** see `polymarket_bot_config.json` (`polymarket_funder_address`)
-- **Bankroll:** ~$0.30 free USDC + ~$21.58 locked in 6 open positions
-- **Portfolio value:** ~$21.88
+- **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`)
 - **Active implementation:** .NET (run via `run-bot.bat` or `dotnet run -- --console`)
-
-### Open Positions (~6 remaining)
-
-Some are **penny positions** (price < $0.01) — effectively worthless, unsellable on CLOB, waiting for resolution.
-
-Most recent trade: BUY YES "Will US or Israel strike Iran by Feb 28, 2026?" — $1.23 at $0.12/share (10.21 shares), 23.5% edge, filled on-chain.
-
-Bot is currently idle: `SCAN SKIP: bankroll $0.30 < min $0.50`. Waiting for a position to resolve or more USDC deposited before resuming.
+- **Dashboard:** `run-dashboard.bat`
 
 ---
 
-## Recent Fixes (2026-02-25 session)
+## Key Features (all implemented, both Python and .NET)
 
-### 1. Scan threshold inflation fix
+### API Key Validation (startup)
 
-**Problem:** Bot was blocked from scanning with `EXPOSURE FULL: room=$1.52 < $1.64`. The formula used portfolio value (`MaxPositionPct × pv × 0.5`) which inflated the threshold when most capital was locked in positions.
+Both implementations now validate the Anthropic API key at startup with a minimal 1-token call. HTTP 401 → log error + exit immediately. Network/rate-limit errors are warned and ignored (transient, don't block startup).
 
-**Fix:** Changed `Program.cs` threshold to `Math.Max(config.MinTradeUsd, config.MaxPositionPct * portfolio.Bankroll)` — based on free cash only.
+- Python: `estimator.validate_api_key()` — raises `anthropic.AuthenticationError` on 401
+- .NET: `estimator.ValidateApiKeyAsync()` — checks HTTP 401 status
 
-**Files:** `dotnet/PolymarketBot/Program.cs`
+### Ghost Position Detection
 
----
+Each cycle (live trading only), tracked positions are verified against actual on-chain token balances via CLOB `/balance-allowance`. If on-chain balance < 0.1 tokens, the position is a ghost (failed order, partial fill, or cleanup issue). Written off immediately:
 
-### 2. Auto-claim: on-chain CTF.redeemPositions
+- Trade logged with `exit_reason = "ghost"`, price = 0, loss = full cost basis
+- Email notification sent (purple color in HTML template)
+- `_recently_closed` cooldown entry added (prevents immediate re-entry)
+- No manual intervention needed
 
-**Problem:** After a market resolves (WON), the user had to manually click "Claim" on polymarket.com. USDC wouldn't return to the wallet until claimed.
+### Position Cooldown
 
-**Implementation:**
-- `BotConfig.cs`: added `AutoClaim` (default `true`), `PolygonRpcUrl`, `CtfAddress`, `UsdcAddress`
-- `ClobApiClient.cs`: added `RedeemWinningPositionAsync()` — submits a raw EIP-155 transaction to Polygon calling `CTF.redeemPositions(collateral, parentCollectionId, conditionId, indexSets)`
-  - ABI-encodes calldata manually (196 bytes)
-  - Signs with existing `EthECKey` + `Keccak` (no new NuGet dependencies)
-  - Broadcasts via JSON-RPC 2.0 (`eth_sendRawTransaction`) to `polygon_rpc_url`
-- `Program.cs`: calls `RedeemWinningPositionAsync` in the Tier 0 position review loop when a WON position is detected
+After closing any position (stop-loss, take-profit, edge-gone, resolved, or ghost), the bot blocks re-entering that same market for `scan_interval_minutes × 2` seconds (2 cycles). Prevents flip-flopping on noisy signals.
 
-**Config required** (`polymarket_bot_config.json`):
-```json
-"auto_claim": true,
-"ctf_address":    "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
-"usdc_address":   "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-"polygon_rpc_url": "https://polygon-rpc.com"
-```
+- Tracked via `_recently_closed: dict[str, float]` (condition_id → close timestamp)
+- Not persisted — resets on restart (intentional)
 
-**Files:** `dotnet/PolymarketBot/BotConfig.cs`, `dotnet/PolymarketBot/Services/ClobApiClient.cs`, `dotnet/PolymarketBot/Program.cs`
+### Re-estimation During Position Review
 
----
+If a position's price moves more than `review_reestimate_threshold_pct` (default 10%) since entry, Claude is re-queried with a smaller `review_ensemble_size` ensemble (default 3) to refresh the fair value estimate. This updates `fair_estimate_at_entry` before edge-gone exit logic runs, so exits are based on current Claude opinion rather than stale entry estimate.
 
-### 3. Misleading "SKIP (no edge)" log message fixed
+### Confidence Filter
 
-**Problem:** `Portfolio.GenerateSignal()` returns null for two different reasons — edge below threshold AND position size below CLOB minimum (5 tokens). Both showed as "SKIP (no edge)" in the log even when edge was +48%.
+After ensemble estimation, if std dev of Claude's estimates exceeds `max_estimate_std` (default 10%), the market is skipped with `SKIP (low confidence)`. Claude's ensemble is disagreeing too much to act on.
 
-**Fix:**
-- `Program.cs`: after `GenerateSignal() == null`, checks `bestEdge > config.MinEdge` separately:
-  - If edge IS sufficient but size is too small → logs "SKIP (bankroll $X < min $Y)" and console "TOO SMALL: need $X, have $Y"
-  - If edge is genuinely below threshold → logs "SKIP (no edge)"
-- `Portfolio.cs`: upgraded CLOB minimum log from `LogDebug` → `LogInformation` so it appears in normal runs
+### Spread Filter
 
-**Files:** `dotnet/PolymarketBot/Program.cs`, `dotnet/PolymarketBot/Services/Portfolio.cs`
+Markets with bid-ask spread > `max_spread` (default 4¢) are skipped during scanning. Wide spreads indicate thin liquidity and poor fill quality.
+
+### HTML Emails
+
+All email notifications use HTML templates with color-coded event types. Each event type has a distinct color (green=buy, red=sell/loss, yellow=warning, purple=ghost, etc.).
 
 ---
 
-### 4. Anthropic 529 retry with exponential backoff
+## Recent Fixes & Implementation Notes
 
-**Problem:** Anthropic 529 (overloaded) errors hit `EnsureSuccessStatusCode()` in the estimator, threw `HttpRequestException`, returned null immediately with no retry — causing entire market estimations to fail silently.
+### SELL Order Bugs Fixed (.NET)
 
-**Fix:** Added retry loop in `Estimator.cs` (up to 3 attempts) for both 429 and 529:
-- Backoff: 10s → 20s → 40s
-- Warning log per attempt: "Anthropic 529 (attempt 1/3) — retrying in 10s"
-- After max retries: logs error and returns null
+- **Floor not Round**: `Math.Floor(shares * 100) / 100` — rounding can exceed on-chain balance by atomic units
+- **SELL price aggression**: subtract 2 ticks from midpoint (mirrors BUY's +2 ticks) for immediate taker fill
+- **Balance sync lag**: after SELL, CLOB balance API shows stale USDC — corrects next cycle. Expected.
+- **CLOB `/balance-allowance`**: returns `allowances` (plural), not `allowance`. Max uint256 = already approved.
 
-**Files:** `dotnet/PolymarketBot/Services/Estimator.cs`
+### Scan Threshold Fix
 
----
+Scan skip threshold = `max(MinTradeUsd, MaxPositionPct × bankroll)` — based on free cash only, not portfolio value. Prevents false blocks when most capital is locked in open positions.
 
-## Known Issues / Watchlist
+### Auto-claim (.NET only)
 
-- **Penny positions**: priced < $0.01, will never recover. They'll either resolve (returning some fraction) or expire worthless. No action needed — penny filter skips them correctly.
-- **Low free bankroll**: Bot won't open new positions until existing ones resolve/exit and USDC returns (or user deposits more).
-- **Auto-claim not yet tested in production**: Implemented and built successfully; will fire next time a WON position is detected. Requires `ctf_address` + `usdc_address` in config.
-- **Python implementation not updated**: The fixes above are .NET only. The Python version still has the old scan threshold logic and no auto-claim.
+When a WON position is detected, submits raw EIP-155 tx to Polygon calling `CTF.redeemPositions`. Config required: `ctf_address`, `usdc_address`, `polygon_rpc_url`. Controlled by `auto_claim` (default true).
+
+### SKIP Log Clarity
+
+`Program.cs` distinguishes two null-signal reasons:
+
+- Edge IS sufficient but position size is below CLOB minimum → logs "SKIP (bankroll < min)", console "TOO SMALL: need $X, have $Y"
+- Edge genuinely below threshold → logs "SKIP (no edge)"
 
 ---
 
@@ -98,10 +86,11 @@ Bot is currently idle: `SCAN SKIP: bankroll $0.30 < min $0.50`. Waiting for a po
 
 - Config priority: CLI arg → env var → `polymarket_bot_config.json` → code default
 - `polymarket_bot_config.json` is gitignored (contains private key + API keys)
-- Kelly sizing caps at `min(KellyFraction × Kelly%, MaxPositionPct × portfolioValue)`, then checked against `bankroll` (can't spend what you don't have)
-- Balance sync happens every cycle: on-chain USDC is fetched and bankroll is adjusted both up (resolved positions) and down (fees/failed orders)
-- `IsHalted` is cleared on restart if `bankroll + TotalExposure() > $1` — transient halts don't stick across restarts
-- Scan skip threshold = `max(MinTradeUsd, MaxPositionPct × bankroll)` — free cash only, not portfolio value
+- `polymarket_bot_config.json.example` — annotated template with recommended values
+- Kelly sizing caps at `min(KellyFraction × Kelly%, MaxPositionPct × portfolioValue)`, then checked against `bankroll`
+- Balance sync: on-chain USDC fetched every cycle and after each trade
+- `IsHalted` auto-clears on restart if `bankroll + TotalExposure() > $1`
+- Both Python and .NET must stay in sync — mirror every logic change
 
 ---
 
@@ -109,17 +98,26 @@ Bot is currently idle: `SCAN SKIP: bankroll $0.30 < min $0.50`. Waiting for a po
 
 | Setting | Default |
 |---------|---------|
-| `min_trade_usd` | `0.5` |
-| `kelly_fraction` | `0.25` |
-| `min_edge` | `8%` |
-| `max_position_pct` | `15%` |
-| `max_total_exposure_pct` | `100%` |
-| `max_category_exposure_pct` | `80%` |
-| `daily_stop_loss_pct` | `20%` |
-| `max_drawdown_pct` | `50%` |
-| `position_stop_loss_pct` | `30%` |
-| `take_profit_price` | `0.95` |
-| `ensemble_size` | `5` |
-| `scan_interval_minutes` | `10` |
-| `auto_claim` | `true` |
-| `polygon_rpc_url` | `https://polygon-rpc.com` |
+| `scan_interval_minutes` | 10 |
+| `markets_per_cycle` | 20 |
+| `min_liquidity` | 10000 |
+| `min_volume_24hr` | 500 |
+| `min_time_to_resolution_hours` | 48 |
+| `max_spread` | 0.04 |
+| `ensemble_size` | 3 |
+| `max_estimate_std` | 0.10 |
+| `min_edge` | 0.10 |
+| `kelly_fraction` | 0.20 |
+| `min_trade_usd` | 0.5 |
+| `max_position_pct` | 15% |
+| `max_total_exposure_pct` | 100% |
+| `max_category_exposure_pct` | 80% |
+| `daily_stop_loss_pct` | 20% |
+| `max_drawdown_pct` | 50% |
+| `max_concurrent_positions` | 10 |
+| `position_stop_loss_pct` | 25% |
+| `take_profit_price` | 0.95 |
+| `review_reestimate_threshold_pct` | 0.10 |
+| `review_ensemble_size` | 3 |
+| `auto_claim` | true |
+| `polygon_rpc_url` | https://polygon-rpc.com |

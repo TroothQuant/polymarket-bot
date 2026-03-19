@@ -9,38 +9,39 @@ Available in **Python** and **.NET 8** — both implementations share the same l
 ## How It Works
 
 ```text
-Every 10 minutes:
-  1. Scan all active Polymarket markets (Gamma API)
-  2. Review existing positions — fetch current prices, check exit rules
-     - Stop-loss: sell if position dropped > 30%
+Every N minutes (default 10):
+  1. Balance sync — fetch actual on-chain USDC, correct bankroll drift
+  2. Ghost check — verify tracked positions still have on-chain tokens; write off strays
+  3. Review open positions — fetch current prices, check exit rules:
+     - Stop-loss: sell if position dropped > 25% from entry
      - Take-profit: sell if price reached 0.95+
-     - Edge-gone: sell if market moved past our original fair estimate
+     - Edge-gone: sell if market moved past original fair estimate
+     - Re-estimate: if price moved >10%, re-run Claude ensemble to refresh fair value
+     - Cooldown: block re-entering a market for 2 cycles after closing a position in it
      - Skip penny positions (price < $0.01, unsellable on CLOB)
      - Top-up tiny positions (<5 tokens) that need exit: buy 5 more, then sell all
-  3. Filter new markets by liquidity, volume, and time to resolution
-  4. Estimate fair probability for each market (N independent Claude calls → trimmed mean)
-  5. Find mispricing > 8% between estimate and market price
-  6. Size position using fractional Kelly criterion (max 15% of bankroll)
-  7. Check risk limits (per-position, per-category, total exposure, drawdown)
-  8. Execute trade (paper or live via CLOB GTC limit orders, +2 ticks aggression for immediate fills)
-  9. Deduct API costs from bankroll
-  10. Save state and repeat
+  4. Filter new markets by liquidity, volume, spread, and time to resolution
+  5. Estimate fair probability (N independent Claude calls → trimmed mean)
+     - Skip markets where ensemble std dev > 10% (low confidence)
+  6. Find mispricing > 10% between estimate and market price
+  7. Size position using fractional Kelly criterion (max 15% of portfolio)
+  8. Check risk limits (per-position, per-category, total exposure, daily stop-loss, drawdown)
+  9. Execute trade (paper or live via CLOB GTC limit orders, +2 ticks aggression for immediate fills)
+  10. Deduct API costs from bankroll, save state, repeat
 ```
 
 ## Quick Start
 
 ### 1. Create your config file
 
-Copy the template and fill in your API keys:
-
 ```bash
 git clone https://github.com/guberm/polymarket-bot.git
 cd polymarket-bot
-cp polymarket_bot_config.json.example polymarket_bot_config.json  # or create manually
-# Edit polymarket_bot_config.json with your keys
+cp polymarket_bot_config.json.example polymarket_bot_config.json
+# Edit polymarket_bot_config.json — fill in anthropic_api_key at minimum
 ```
 
-Minimum required fields for paper trading:
+Minimum required for paper trading:
 
 ```json
 {
@@ -103,13 +104,13 @@ An Electron desktop app that visualises the bot's state in real time.
 - Trade history table with sortable columns (all 11 columns)
 - Cumulative P&L and exposure-by-category charts (flicker-free, update in-place)
 - Risk limit meters (per-position, per-category, total exposure, daily stop-loss, drawdown)
-- Exit reason breakdown
+- Exit reason breakdown (stop-loss, take-profit, edge-gone, ghost, resolved)
 - Live log — shows only the current session, clears between restarts, supports manual clear and export
 - Config editor — view and edit all `polymarket_bot_config.json` fields in-browser
-- Start / Stop bot — launches Python or .NET implementation with optional `--verbose` / `--console` flags; preferences persist across sessions
-- Light/dark theme toggle (button in header, persists across sessions)
-- Language toggle — switch between English and Russian UI (persists across sessions)
-- Tooltip help icons (?) on all stat cards and section headers — hover to see explanation
+- Start / Stop bot — launches Python or .NET with optional `--verbose` / `--console` flags; preferences persist
+- Light/dark theme toggle (persists across sessions)
+- Language toggle — English / Russian UI (persists across sessions)
+- Tooltip help icons (?) on all stat cards and section headers
 
 **Requirements:** Node.js (for first-time `npm install`). No rebuild needed after that — `run-dashboard.bat` uses the cached Electron binary.
 
@@ -137,7 +138,7 @@ Requires a funded Polymarket wallet on Polygon (chain ID 137). For Gnosis Safe w
 
 ### Auto-claim (optional, .NET only)
 
-When a position resolves WON, the bot can automatically submit the on-chain `CTF.redeemPositions` transaction so USDC returns to your wallet without manual intervention:
+When a position resolves WON, the bot automatically submits the on-chain `CTF.redeemPositions` transaction so USDC returns to your wallet without manual intervention:
 
 ```json
 {
@@ -152,7 +153,7 @@ When a position resolves WON, the bot can automatically submit the on-chain `CTF
 
 ## CLI Arguments
 
-Risk parameters can be overridden at startup (override config file):
+Risk parameters can be overridden at startup:
 
 ```bash
 # Python
@@ -162,62 +163,124 @@ python main.py --max-position-pct 0.15 --max-total-exposure-pct 0.90 --daily-sto
 dotnet run -- --max-position-pct 0.15 --max-total-exposure-pct 0.90 --daily-stop-loss-pct 0.20
 ```
 
-Available CLI args: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`, `--verbose`.
+Available: `--max-position-pct`, `--max-total-exposure-pct`, `--max-category-exposure-pct`, `--daily-stop-loss-pct`, `--max-drawdown-pct`, `--max-concurrent-positions`, `--verbose`, `--console`.
 
 ## Configuration
 
-All settings live in **`polymarket_bot_config.json`** at the project root. The file is not tracked by git (it contains secrets).
+All settings live in **`polymarket_bot_config.json`** at the project root. The file is not tracked by git (it contains secrets). See `polymarket_bot_config.json.example` for a fully annotated template.
 
 Config priority (highest wins): **CLI arg → env var → config file → code default**
+
+All keys can also be set as environment variables (uppercase, underscores). Example: `anthropic_api_key` → `ANTHROPIC_API_KEY`.
+
+### Required
+
+| Key | Description |
+|-----|-------------|
+| `anthropic_api_key` | Claude API key |
+| `anthropic_api_host` | Anthropic API base URL |
+| `gamma_api_host` | Gamma API base URL (market discovery) |
+| `clob_host` | CLOB API base URL (price quotes + orders) |
+
+### Trading Mode
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `live_trading` | `false` | Set `true` for real orders |
 | `initial_bankroll` | `10000` | Starting capital in USD |
-| `anthropic_api_key` | — | Required. Claude API key |
-| `anthropic_api_host` | — | Anthropic API base URL |
-| `claude_model` | `claude-sonnet-4-20250514` | Model for estimation |
-| `min_edge` | `0.08` | Minimum mispricing to trade (8%) |
+
+### Market Scanning & Filtering
+
+| Key | Default | Description |
+|-----|---------|-------------|
 | `scan_interval_minutes` | `10` | Time between scan cycles |
-| `markets_per_cycle` | `30` | Max markets to evaluate per cycle |
-| `ensemble_size` | `5` | Claude calls per market estimate |
+| `markets_per_cycle` | `20` | Max markets evaluated per cycle |
+| `min_liquidity` | `10000` | Min pool liquidity in USD |
+| `min_volume_24hr` | `500` | Min 24h trading volume in USD |
+| `min_time_to_resolution_hours` | `48` | Skip markets resolving too soon |
+| `min_market_price` | `0.10` | Skip extreme prices (thin CLOB) |
+| `max_spread` | `0.04` | Skip wide bid-ask spreads (poor fill quality) |
+
+### Estimation
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `claude_model` | `claude-sonnet-4-20250514` | Model for estimation |
+| `ensemble_size` | `3` | Claude calls per market |
 | `ensemble_temperature` | `0.7` | Temperature for ensemble diversity |
-| `kelly_fraction` | `0.25` | Fractional Kelly (0.25 = quarter Kelly) |
+| `max_estimate_tokens` | `1024` | Max output tokens per Claude call |
+| `max_estimate_std` | `0.10` | Skip markets where ensemble std dev exceeds this (Claude disagrees too much) |
+
+### Position Sizing
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `min_edge` | `0.10` | Minimum mispricing to trade (10%) |
+| `kelly_fraction` | `0.20` | Fractional Kelly (0.20 = fifth Kelly) |
+| `min_trade_usd` | `0.5` | Minimum position size in USD |
+
+### Risk Limits
+
+| Key | Default | Description |
+|-----|---------|-------------|
 | `max_position_pct` | `0.15` | Max 15% of portfolio per position |
 | `max_total_exposure_pct` | `1.00` | Max 100% of portfolio in open positions |
 | `max_category_exposure_pct` | `0.80` | Max 80% per category |
 | `daily_stop_loss_pct` | `0.20` | Halt if daily loss exceeds 20% |
-| `max_drawdown_pct` | `0.50` | Halt if drawdown exceeds 50% |
-| `max_concurrent_positions` | `20` | Max open positions |
-| `min_trade_usd` | `0.5` | Minimum trade size in USD |
+| `max_drawdown_pct` | `0.50` | Halt if drawdown from peak exceeds 50% |
+| `max_concurrent_positions` | `10` | Max open positions |
+
+### Position Exit Rules
+
+| Key | Default | Description |
+|-----|---------|-------------|
 | `enable_position_review` | `true` | Review positions for exits each cycle |
-| `position_stop_loss_pct` | `0.30` | Sell if position drops > 30% |
+| `position_stop_loss_pct` | `0.25` | Sell if position drops > 25% from entry |
 | `take_profit_price` | `0.95` | Sell if price reaches 0.95+ |
 | `exit_edge_buffer` | `0.05` | Buffer before edge-gone exit triggers |
-| `polymarket_private_key` | — | Wallet private key (live trading) |
-| `polymarket_funder_address` | — | Funder address (live trading) |
-| `polymarket_signature_type` | `0` | Signature type (0=EOA, 1=GNOSIS_SAFE) |
-| `gamma_api_host` | — | Gamma API base URL (market discovery) |
-| `clob_host` | — | CLOB API base URL (price quotes, orders) |
+| `review_reestimate_threshold_pct` | `0.10` | Re-run Claude if price moved >10% since last estimate |
+| `review_ensemble_size` | `3` | Ensemble size for re-estimation during review |
+
+### Live Trading Credentials
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `polymarket_private_key` | — | Wallet private key |
+| `polymarket_funder_address` | — | Funder address |
+| `polymarket_signature_type` | `0` | `0`=EOA, `1`=Gnosis Safe |
 | `exchange_address` | — | CTF Exchange contract address |
 | `neg_risk_exchange_address` | — | Neg Risk CTF Exchange contract address |
-| `email_enabled` | `false` | Send email notifications |
-| `email_smtp_host` | — | SMTP server (e.g. `smtp.gmail.com`) |
-| `email_smtp_port` | `587` | SMTP port |
-| `email_use_tls` | `true` | Use STARTTLS; set `false` for SSL on port 465 |
-| `email_user` | — | SMTP login / sender address |
-| `email_password` | — | SMTP password (use app password for Gmail) |
-| `email_to` | — | Recipient address |
-| `auto_claim` | `true` | Auto-submit on-chain redemption when a position resolves WON (.NET only) |
-| `polygon_rpc_url` | `https://polygon-rpc.com` | Polygon JSON-RPC endpoint for auto-claim |
+
+### Auto-claim (.NET only)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `auto_claim` | `true` | Auto-submit on-chain redemption when a position resolves WON |
+| `polygon_rpc_url` | `https://polygon-rpc.com` | Polygon JSON-RPC endpoint |
 | `ctf_address` | — | CTF contract address (required for auto-claim) |
 | `usdc_address` | — | USDC contract address (required for auto-claim) |
 
-All keys can also be set as environment variables (uppercase, underscores). For example, `anthropic_api_key` → `ANTHROPIC_API_KEY`. Env vars take priority over the config file.
+### Email Notifications
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `email_enabled` | `false` | Send email notifications |
+| `email_smtp_host` | — | SMTP server (e.g. `smtp.gmail.com`) |
+| `email_smtp_port` | `587` | SMTP port |
+| `email_use_tls` | `true` | STARTTLS; set `false` for SSL on port 465 |
+| `email_user` | — | SMTP login / sender address |
+| `email_password` | — | SMTP password (use App Password for Gmail) |
+| `email_to` | — | Recipient address |
+
+### Misc
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `data_dir` | `../data` | Where to write `portfolio.json`, `trades.jsonl`, `bot.log` |
 
 ## Email Notifications
 
-Set `"email_enabled": true` in `polymarket_bot_config.json` to receive emails on every state change:
+Set `"email_enabled": true` to receive HTML emails on every state change:
 
 | Event | Example subject |
 |-------|----------------|
@@ -225,60 +288,63 @@ Set `"email_enabled": true` in `polymarket_bot_config.json` to receive emails on
 | Daily reset | `Daily reset — portfolio $37.50` |
 | Position opened | `BUY YES $5.00 — Will X happen?` |
 | Position closed | `SELL (stop_loss) -32.1% — Will X happen?` |
+| Ghost removed | `GHOST: no tokens on-chain — Will X happen?` |
 | Market resolved | `Resolved (WON) PnL=+$5.00 — ...` |
 | Agent halted | `HALTED: Portfolio value < $1` |
 | Cycle error | `Error in cycle 42` |
 | Bot stopped | `Stopped — portfolio $35.20, PnL -$1.80` |
 
-For Gmail, create an [App Password](https://myaccount.google.com/apppasswords) instead of using your regular password.
+For Gmail, create an [App Password](https://myaccount.google.com/apppasswords) instead of your regular password. Emails use HTML formatting with color-coded event types.
 
 ## Project Structure
 
 ```text
-polymarket_bot_config.json     ← Your config (not tracked by git — contains secrets)
+polymarket_bot_config.json         ← Your config (not tracked by git — contains secrets)
+polymarket_bot_config.json.example ← Fully annotated config template
 
-python/                        ← Python implementation
-  main.py                        Orchestration loop
-  config.py                      BotConfig (reads config.json then env vars)
-  notifier.py                    Email notifications (smtplib)
-  models.py                      Domain models (MarketInfo, Estimate, Signal, Position, Trade, ExitSignal, TopupCandidate)
-  market_scanner.py              Gamma API integration, market filtering, batch price fetch
-  estimator.py                   Claude ensemble estimation (trimmed mean)
-  portfolio.py                   Kelly sizing, risk management, position review, API cost tracking
-  trader.py                      PaperTrader + LiveTrader (buy & sell via py-clob-client)
-  persistence.py                 JSON state + JSONL trade log
-  logger_setup.py                Colored console + JSON file logging
-  requirements.txt               Python dependencies
+python/                            ← Python implementation
+  main.py                            Orchestration loop
+  config.py                          BotConfig (reads config.json then env vars)
+  notifier.py                        HTML email notifications (smtplib)
+  models.py                          Domain models (MarketInfo, Estimate, Signal, Position, Trade, ...)
+  market_scanner.py                  Gamma API integration, market filtering, batch price fetch
+  estimator.py                       Claude ensemble estimation (trimmed mean + confidence filter)
+  portfolio.py                       Kelly sizing, risk management, cooldown, position review
+  trader.py                          PaperTrader + LiveTrader + ghost position detection
+  persistence.py                     JSON state + JSONL trade log
+  logger_setup.py                    Colored console + JSON file logging
+  requirements.txt                   Python dependencies
 
-dotnet/PolymarketBot/          ← .NET 8 implementation
-  Program.cs                     Orchestration loop (async)
-  BotConfig.cs                   Config (reads config.json then env vars)
-  Models/                        Domain models (including ExitSignal, TopupCandidate)
+dotnet/PolymarketBot/              ← .NET 8 implementation (mirrors Python exactly)
+  Program.cs                         Orchestration loop (async)
+  BotConfig.cs                       Config loading
+  Models/                            Domain models
   Services/
-    MarketScanner.cs             Gamma API integration, market filtering, batch price fetch
-    Estimator.cs                 Claude ensemble via Anthropic REST API
-    Portfolio.cs                 Kelly sizing, risk management, position review, API cost tracking
-    Notifier.cs                  Email notifications (System.Net.Mail)
-    ClobApiClient.cs             CLOB API auth (EIP-712 + HMAC), order signing/posting (buy & sell)
-    LiveTrader.cs                Live execution via CLOB API (buy & sell with GTC polling)
-    PaperTrader.cs               Simulated execution
-    PersistenceService.cs        Atomic JSON save + JSONL trade log
-    JsonFileLoggerProvider.cs    JSON lines file logger
-  PolymarketBot.csproj           Project file
+    MarketScanner.cs                 Gamma API + spread filter
+    Estimator.cs                     Claude ensemble + confidence filter + 429/529 retry
+    Portfolio.cs                     Kelly sizing, risk checks, cooldown, position review
+    Notifier.cs                      HTML email notifications (System.Net.Mail)
+    ClobApiClient.cs                 EIP-712 + HMAC CLOB auth, orders, auto-claim
+    LiveTrader.cs                    Live execution + ghost position detection
+    PaperTrader.cs                   Simulated execution
+    PersistenceService.cs            Atomic JSON portfolio + JSONL trades
+    JsonFileLoggerProvider.cs        JSON lines file logger
+  PolymarketBot.csproj               Project file
 
-data/                          ← Runtime state (both implementations)
-  portfolio.json                 Current portfolio state (atomically written)
-  trades.jsonl                   Append-only trade history
-  bot.log                        Structured JSON logs
+data/                              ← Runtime state (both implementations write here)
+  portfolio.json                     Current portfolio state (atomically written)
+  trades.jsonl                       Append-only trade history
+  bot.log                            Current session structured logs
+  bot-TIMESTAMP.log                  Rotated logs from previous sessions
 ```
 
-### Estimation
+## How It Estimates
 
-The estimator makes N independent Claude calls per market at temperature 0.7. Each call returns a probability estimate. The trimmed mean (dropping highest and lowest when N≥4) becomes the fair value. The current market price is deliberately **not shown** to Claude to prevent anchoring.
+The estimator makes N independent Claude calls per market at temperature 0.7. Each call returns a probability estimate. The trimmed mean (dropping highest and lowest when N≥4) becomes the fair value. The current market price is deliberately **not shown** to Claude to prevent anchoring. If the ensemble standard deviation exceeds `max_estimate_std` (default 10%), the market is skipped — Claude's estimates disagree too much to act on.
 
-### Kelly Criterion Sizing
+## Kelly Criterion Sizing
 
-The bot uses the [Kelly criterion](https://en.wikipedia.org/wiki/Kelly_criterion) to determine optimal position sizes. The Kelly formula maximizes long-run growth rate by betting more when the edge is larger and the odds are better.
+The bot uses the [Kelly criterion](https://en.wikipedia.org/wiki/Kelly_criterion) to determine optimal position sizes.
 
 **Formula:**
 
@@ -288,56 +354,58 @@ f* = (b × p - q) / b
 
 Where:
 - `f*` = fraction of bankroll to wager
-- `b` = net odds (payout per $1 risked). For a market priced at `m`, `b = (1 - m) / m`
+- `b` = net odds. For a market priced at `m`: `b = (1 - m) / m`
 - `p` = estimated true probability (from Claude ensemble)
-- `q` = 1 - p (probability of losing)
+- `q` = 1 - p
 
-**Example:** A market is trading at $0.40 (implied 40% chance). Claude estimates the true probability is 55%.
-
-```text
-b = (1 - 0.40) / 0.40 = 1.5        (risk $1 to win $1.50)
-f* = (1.5 × 0.55 - 0.45) / 1.5     = 0.25    (full Kelly says bet 25%)
-```
-
-**Why fractional Kelly?** Full Kelly is mathematically optimal but extremely volatile — a small estimation error can lead to massive drawdowns. The bot defaults to **quarter Kelly** (`kelly_fraction: 0.25`), betting 25% of what full Kelly recommends. This sacrifices ~25% of the theoretical growth rate in exchange for ~75% less variance. The resulting bet in the example above:
+**Example:** Market at $0.40 (40% implied), Claude estimates 55% true probability.
 
 ```text
-Actual bet = 0.25 × 25% = 6.25% of bankroll
+b = (1 - 0.40) / 0.40 = 1.5
+f* = (1.5 × 0.55 - 0.45) / 1.5 = 0.25    (full Kelly says 25%)
+Actual bet = kelly_fraction × f* × portfolio_value
+           = 0.20 × 25% × $1000 = $50
 ```
 
 This is then capped by `max_position_pct` (default 15%) and must pass all risk checks before execution.
 
-### Position Review & Exits
+## Position Review & Exits
 
 Each cycle, before scanning for new trades, the bot reviews all open positions:
 
-- **Stop-loss** — sell if price dropped > 30% from entry
-- **Take-profit** — sell if price reached 0.95+ (near certain resolution)
+- **Ghost check** — verify each position still has tokens on-chain. If balance < 0.1 tokens, the position is a ghost (from a failed order or partial fill) and is written off immediately.
+- **Stop-loss** — sell if price dropped > 25% from entry
+- **Take-profit** — sell if price reached 0.95+ (near-certain resolution)
 - **Edge-gone** — sell if the market price moved past the original fair estimate (edge evaporated)
-- **Penny filter** — skip positions priced below $0.01 (can't create valid CLOB sell orders at sub-cent prices)
+- **Re-estimation** — if a position's price moved >10% since the last estimate, re-run Claude with a smaller ensemble (`review_ensemble_size`) to refresh the fair value before deciding to exit
+- **Cooldown** — after closing a position (any reason), block re-entering that same market for 2 scan cycles (prevents flip-flopping)
+- **Penny filter** — skip positions priced below $0.01 (can't create valid CLOB sell orders)
 - **Top-up-and-sell** — tiny positions (<5 tokens) that trigger an exit are rescued by buying 5 more tokens to reach the CLOB minimum, then selling all
 
-Buy orders are placed at midpoint + 2 tick sizes to cross the spread and fill immediately as taker orders. Sell orders use the midpoint price. GTC orders poll for fill for up to 15 seconds, then cancel if unfilled. The top-up-and-sell algorithm handles positions that are too small to sell directly: it buys 5 tokens (CLOB minimum order size), then immediately sells the full position. If the buy fills but the sell doesn't, the position becomes sellable on the next cycle.
+Buy orders use midpoint + 2 tick sizes to cross the spread and fill as immediate taker orders. Sell orders subtract 2 ticks for symmetric aggression. GTC orders poll for up to 15 seconds, then cancel if unfilled.
 
-### Risk Management
+## Risk Management
 
 Five layers of protection:
 
 1. **Per-position cap** — max 15% of portfolio on any single market
-2. **Per-category cap** — max 80% exposure in politics, sports, crypto, etc.
+2. **Per-category cap** — max 80% in politics, sports, crypto, etc.
 3. **Total exposure cap** — max 100% of portfolio in open positions
-4. **Daily stop-loss** — halt trading if daily losses exceed 20%
-5. **Max drawdown** — halt if drawdown from peak exceeds 50%
+4. **Daily stop-loss** — halt trading if daily losses exceed 20% of portfolio value
+5. **Max drawdown** — halt if drawdown from peak exceeds 50% of portfolio value
 
-Daily stop-loss and drawdown are calculated against **portfolio value** (bankroll + open position value), not just bankroll alone. This prevents false halts when capital is deployed in positions.
+All limits use **portfolio value** (bankroll + open position value), not just free cash.
 
-### Agent Survival
+**Cooldown** (6th layer): After exiting any position, that market is blocked for re-entry for 2 scan cycles. This prevents the bot from immediately re-entering a trade it just exited, which is usually a sign of estimation noise rather than genuine opportunity.
 
-API costs (Claude inference) are deducted from the bankroll every cycle. The agent must generate enough edge to cover its own operating costs.
+## Agent Survival
 
-To avoid spending the last USDC on API calls when no trades are possible, the estimation loop stops early if `bankroll < $0.30`. The bot also skips the Gamma API scan entirely if the bankroll is too low to fund the smallest possible position — saving ~15s per cycle. The scan threshold is `max(min_trade_usd, max_position_pct × bankroll)`, so the threshold scales with free cash rather than total portfolio value (avoiding false blocks when most capital is locked in open positions). The bot continues running (monitoring positions, waiting for exits) and resumes full operation once USDC returns from resolved/exited positions.
+API costs (Claude inference) are deducted from the bankroll each cycle. The agent must generate enough edge to cover its own operating costs.
 
-The agent truly halts only when total portfolio value (`bankroll + open position value`) drops below $1. This prevents false halts when capital is deployed in positions but free USDC is temporarily low. A stale halt flag from a previous session is automatically cleared on restart if the portfolio is still healthy.
+- Estimation stops early when `bankroll < $0.30` (API reserve guard)
+- Scan is skipped entirely when `bankroll < max(min_trade_usd, max_position_pct × bankroll)` (saves API time when we can't afford a trade)
+- Agent truly halts when `bankroll + open position value < $1`
+- A stale `is_halted` flag from a previous session is auto-cleared on restart if the portfolio is still healthy
 
 ## Disclaimer
 

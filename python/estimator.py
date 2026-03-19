@@ -143,3 +143,23 @@ class Estimator:
         except anthropic.APIError as e:
             log.error(f"Anthropic API error: {e}")
             return None
+
+    def validate_api_key(self) -> bool:
+        """Make a minimal test call to validate the API key.
+
+        Returns False on HTTP 401 (invalid/unauthorized key).
+        Other errors (network, rate-limit) return True so a transient failure
+        doesn't block startup.
+        """
+        try:
+            self.client.messages.create(
+                model=self.config.claude_model,
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            return True
+        except anthropic.AuthenticationError:
+            return False
+        except Exception:
+            # Network errors, rate limits, etc. — don't block startup
+            return True

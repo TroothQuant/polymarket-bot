@@ -119,6 +119,15 @@ def main():
     estimator = Estimator(config)
     notifier = Notifier(config)
 
+    # Validate Anthropic API key with a minimal test call
+    log.info("Validating Anthropic API key...")
+    if not estimator.validate_api_key():
+        log.error("Anthropic API key is invalid or unauthorized — check anthropic_api_key in config. Exiting.")
+        if con:
+            print(f"[{ts()}] {RED}ERROR: Anthropic API key invalid. Check config.{RESET}")
+        sys.exit(1)
+    log.info("Anthropic API key validated.")
+
     if config.live_trading:
         if not config.polymarket_private_key and not config.polymarket_api_key:
             log.error("POLYMARKET_PRIVATE_KEY or POLYMARKET_API_KEY required for live trading")

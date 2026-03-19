@@ -156,6 +156,17 @@ var scanner = new MarketScanner(config, httpClient, loggerFactory.CreateLogger<M
 var estimator = new Estimator(config, httpClient, loggerFactory.CreateLogger<Estimator>());
 var notifier = new Notifier(config, loggerFactory.CreateLogger<Notifier>());
 
+// ── Validate Anthropic API key ───────────────────────────────────
+
+log.LogInformation("Validating Anthropic API key...");
+if (!await estimator.ValidateApiKeyAsync())
+{
+    log.LogError("Anthropic API key is invalid or unauthorized — check anthropic_api_key in config. Exiting.");
+    if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: Anthropic API key invalid. Check config.{RESET}");
+    return 1;
+}
+log.LogInformation("Anthropic API key validated.");
+
 // ── Graceful shutdown ───────────────────────────────────────────
 
 using var cts = new CancellationTokenSource();
