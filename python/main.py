@@ -82,7 +82,8 @@ def main():
     log.info(f"Mode: {mode} | Bankroll: ${config.initial_bankroll:.2f}")
     log.info(f"Min edge: {config.min_edge:.0%} | Max position: {config.max_position_pct:.0%}")
     log.info(f"Scan interval: {config.scan_interval_minutes} min | Markets/cycle: {config.markets_per_cycle}")
-    log.info(f"Ensemble: {config.ensemble_size}x {config.claude_model}")
+    _effective_model = config.ai_model or config.claude_model
+    log.info(f"Ensemble: {config.ensemble_size}x {_effective_model} [{config.ai_provider}]")
     log.info("=" * 60)
 
     if con:
@@ -126,14 +127,13 @@ def main():
     estimator = Estimator(config)
     notifier = Notifier(config)
 
-    # Validate Anthropic API key with a minimal test call
-    log.info("Validating Anthropic API key...")
+    log.info(f"Validating {config.ai_provider} API key...")
     if not estimator.validate_api_key():
-        log.error("Anthropic API key is invalid or unauthorized — check anthropic_api_key in config. Exiting.")
+        log.error(f"{config.ai_provider} API key is invalid or unauthorized. Exiting.")
         if con:
-            print(f"[{ts()}] {RED}ERROR: Anthropic API key invalid. Check config.{RESET}")
+            print(f"[{ts()}] {RED}ERROR: {config.ai_provider} API key invalid. Check config.{RESET}")
         sys.exit(1)
-    log.info("Anthropic API key validated.")
+    log.info(f"{config.ai_provider} API key validated.")
 
     if config.live_trading:
         if not config.polymarket_private_key and not config.polymarket_api_key:

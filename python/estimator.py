@@ -181,7 +181,8 @@ class Estimator:
             url = f"{host}/v1/chat/completions"
             headers = {"Authorization": f"Bearer {self.config.openai_api_key}"}
         elif provider == "openrouter":
-            url = "https://openrouter.ai/api/v1/chat/completions"
+            host = (self.config.openrouter_api_host or "https://openrouter.ai").rstrip("/")
+            url = f"{host}/api/v1/chat/completions"
             headers = {"Authorization": f"Bearer {self.config.openrouter_api_key}"}
         else:  # azure_openai
             endpoint = self.config.azure_openai_endpoint.rstrip("/")
@@ -230,10 +231,8 @@ class Estimator:
 
     def _call_gemini(self, market: MarketInfo):
         model = self._model
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            f"?key={self.config.gemini_api_key}"
-        )
+        host = (self.config.gemini_api_host or "https://generativelanguage.googleapis.com").rstrip("/")
+        url = f"{host}/v1beta/models/{model}:generateContent?key={self.config.gemini_api_key}"
         payload = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": [{"role": "user", "parts": [{"text": _build_user_prompt(market)}]}],
@@ -290,7 +289,8 @@ class Estimator:
                     url = f"{host}/v1/chat/completions"
                     auth_headers = {"Authorization": f"Bearer {self.config.openai_api_key}"}
                 elif provider == "openrouter":
-                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    host = (self.config.openrouter_api_host or "https://openrouter.ai").rstrip("/")
+                    url = f"{host}/api/v1/chat/completions"
                     auth_headers = {"Authorization": f"Bearer {self.config.openrouter_api_key}"}
                 else:
                     endpoint = self.config.azure_openai_endpoint.rstrip("/")
@@ -309,8 +309,9 @@ class Estimator:
                 return True
 
             elif provider == "gemini":
+                host = (self.config.gemini_api_host or "https://generativelanguage.googleapis.com").rstrip("/")
                 resp = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent"
+                    f"{host}/v1beta/models/{self._model}:generateContent"
                     f"?key={self.config.gemini_api_key}",
                     json={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}},
                     headers={"Content-Type": "application/json"},

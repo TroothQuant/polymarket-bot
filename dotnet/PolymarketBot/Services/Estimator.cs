@@ -212,7 +212,8 @@ public sealed class Estimator
         }
         else if (provider == "openrouter")
         {
-            url = "https://openrouter.ai/api/v1/chat/completions";
+            var orHost = string.IsNullOrEmpty(_config.OpenRouterApiHost) ? "https://openrouter.ai" : _config.OpenRouterApiHost.TrimEnd('/');
+            url = $"{orHost}/api/v1/chat/completions";
             req.Headers.Add("Authorization", $"Bearer {_config.OpenRouterApiKey}");
         }
         else  // azure_openai
@@ -262,7 +263,8 @@ public sealed class Estimator
     private async Task<(int, string)> MakeGeminiRequestAsync(string userPrompt, CancellationToken ct)
     {
         var model = ActiveModel;
-        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
+        var gemHost = string.IsNullOrEmpty(_config.GeminiApiHost) ? "https://generativelanguage.googleapis.com" : _config.GeminiApiHost.TrimEnd('/');
+        var url = $"{gemHost}/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
         var body = JsonSerializer.Serialize(new
         {
             systemInstruction = new { parts = new[] { new { text = SystemPrompt } } },
@@ -373,7 +375,8 @@ public sealed class Estimator
             if (provider == "gemini")
             {
                 var model = ActiveModel;
-                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
+                var gemHost = string.IsNullOrEmpty(_config.GeminiApiHost) ? "https://generativelanguage.googleapis.com" : _config.GeminiApiHost.TrimEnd('/');
+                var url = $"{gemHost}/v1beta/models/{model}:generateContent?key={_config.GeminiApiKey}";
                 var body = JsonSerializer.Serialize(new
                 {
                     contents = new[] { new { parts = new[] { new { text = "hi" } } } },
@@ -389,7 +392,7 @@ public sealed class Estimator
                 var (url, authHeader, authValue) = provider switch
                 {
                     "openai" => ($"{(_config.OpenAiApiHost.TrimEnd('/'))}/v1/chat/completions", "Authorization", $"Bearer {_config.OpenAiApiKey}"),
-                    "openrouter" => ("https://openrouter.ai/api/v1/chat/completions", "Authorization", $"Bearer {_config.OpenRouterApiKey}"),
+                    "openrouter" => ($"{(string.IsNullOrEmpty(_config.OpenRouterApiHost) ? "https://openrouter.ai" : _config.OpenRouterApiHost.TrimEnd('/'))}/api/v1/chat/completions", "Authorization", $"Bearer {_config.OpenRouterApiKey}"),
                     _ => ($"{_config.AzureOpenAiEndpoint.TrimEnd('/')}/openai/deployments/{_config.AzureOpenAiDeployment}/chat/completions?api-version={_config.AzureOpenAiApiVersion}", "api-key", _config.AzureOpenAiApiKey),
                 };
                 var body = JsonSerializer.Serialize(new

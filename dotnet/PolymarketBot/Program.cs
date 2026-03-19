@@ -100,7 +100,8 @@ log.LogInformation("Mode: {Mode} | Bankroll: ${Bankroll:F2}", mode, config.Initi
 log.LogInformation("Min edge: {MinEdge:P0} | Max position: {MaxPos:P0}", config.MinEdge, config.MaxPositionPct);
 log.LogInformation("Scan interval: {Interval} min | Markets/cycle: {Markets}",
     config.ScanIntervalMinutes, config.MarketsPerCycle);
-log.LogInformation("Ensemble: {Size}x {Model}", config.EnsembleSize, config.ClaudeModel);
+var _effectiveModel = !string.IsNullOrEmpty(config.AiModel) ? config.AiModel : config.ClaudeModel;
+log.LogInformation("Ensemble: {Size}x {Model} [{Provider}]", config.EnsembleSize, _effectiveModel, config.AiProvider);
 log.LogInformation(new string('=', 60));
 
 if (console_)
@@ -166,14 +167,14 @@ var notifier = new Notifier(config, loggerFactory.CreateLogger<Notifier>());
 
 // ── Validate Anthropic API key ───────────────────────────────────
 
-log.LogInformation("Validating Anthropic API key...");
+log.LogInformation("Validating {Provider} API key...", config.AiProvider);
 if (!await estimator.ValidateApiKeyAsync())
 {
-    log.LogError("Anthropic API key is invalid or unauthorized — check anthropic_api_key in config. Exiting.");
-    if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: Anthropic API key invalid. Check config.{RESET}");
+    log.LogError("{Provider} API key is invalid or unauthorized. Exiting.", config.AiProvider);
+    if (console_) Console.WriteLine($"[{Ts()}] {RED}ERROR: {config.AiProvider} API key invalid. Check config.{RESET}");
     return 1;
 }
-log.LogInformation("Anthropic API key validated.");
+log.LogInformation("{Provider} API key validated.", config.AiProvider);
 
 // ── Graceful shutdown ───────────────────────────────────────────
 

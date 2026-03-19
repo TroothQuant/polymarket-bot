@@ -10,8 +10,6 @@
 
   "____SECTION_REQUIRED____": "── Required credentials ──────────────────────────────────────────────",
 
-  "anthropic_api_key": "sk-ant-...",
-  "anthropic_api_host": "https://api.anthropic.com",
   "gamma_api_host": "https://gamma-api.polymarket.com",
   "clob_host": "https://clob.polymarket.com",
 
@@ -45,9 +43,30 @@
   "min_market_price": 0.10,
   "max_spread": 0.04,
 
-  "____SECTION_ESTIMATION____": "── Claude ensemble estimation ────────────────────────────────────────",
+  "____SECTION_AI_PROVIDER____": "── AI provider (pick one) ────────────────────────────────────────────",
 
-  "claude_model": "claude-sonnet-4-20250514",
+  "ai_provider": "anthropic",
+  "ai_model": "claude-sonnet-4-6",
+
+  "anthropic_api_key": "sk-ant-...",
+  "anthropic_api_host": "https://api.anthropic.com",
+
+  "openai_api_key": "",
+  "openai_api_host": "https://api.openai.com",
+
+  "gemini_api_key": "",
+  "gemini_api_host": "https://generativelanguage.googleapis.com",
+
+  "openrouter_api_key": "",
+  "openrouter_api_host": "https://openrouter.ai",
+
+  "azure_openai_api_key": "",
+  "azure_openai_endpoint": "",
+  "azure_openai_deployment": "",
+  "azure_openai_api_version": "2024-02-01",
+
+  "____SECTION_ESTIMATION____": "── Ensemble estimation settings ──────────────────────────────────────",
+
   "ensemble_size": 3,
   "ensemble_temperature": 0.7,
   "max_estimate_tokens": 1024,

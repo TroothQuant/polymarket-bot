@@ -80,9 +80,11 @@ class BotConfig:
     # API keys — shared provider keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    openai_api_host: str = "https://api.openai.com"   # override for OpenAI-compatible APIs
+    openai_api_host: str = "https://api.openai.com"
     gemini_api_key: str = ""
+    gemini_api_host: str = "https://generativelanguage.googleapis.com"
     openrouter_api_key: str = ""
+    openrouter_api_host: str = "https://openrouter.ai"
     azure_openai_api_key: str = ""
     azure_openai_endpoint: str = ""          # e.g. https://my-resource.openai.azure.com
     azure_openai_deployment: str = ""        # deployment / model name
@@ -173,7 +175,9 @@ class BotConfig:
             openai_api_key=get("openai_api_key", ""),
             openai_api_host=get("openai_api_host", "https://api.openai.com"),
             gemini_api_key=get("gemini_api_key", ""),
+            gemini_api_host=get("gemini_api_host", "https://generativelanguage.googleapis.com"),
             openrouter_api_key=get("openrouter_api_key", ""),
+            openrouter_api_host=get("openrouter_api_host", "https://openrouter.ai"),
             azure_openai_api_key=get("azure_openai_api_key", ""),
             azure_openai_endpoint=get("azure_openai_endpoint", ""),
             azure_openai_deployment=get("azure_openai_deployment", ""),

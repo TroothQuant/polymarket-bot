@@ -64,7 +64,9 @@ public sealed class BotConfig
     public string OpenAiApiKey { get; init; } = "";
     public string OpenAiApiHost { get; init; } = "https://api.openai.com";
     public string GeminiApiKey { get; init; } = "";
+    public string GeminiApiHost { get; init; } = "https://generativelanguage.googleapis.com";
     public string OpenRouterApiKey { get; init; } = "";
+    public string OpenRouterApiHost { get; init; } = "https://openrouter.ai";
     public string AzureOpenAiApiKey { get; init; } = "";
     public string AzureOpenAiEndpoint { get; init; } = "";
     public string AzureOpenAiDeployment { get; init; } = "";
@@ -153,7 +155,9 @@ public sealed class BotConfig
             OpenAiApiKey = Cfg("openai_api_key", "OPENAI_API_KEY", ""),
             OpenAiApiHost = Cfg("openai_api_host", "OPENAI_API_HOST", "https://api.openai.com"),
             GeminiApiKey = Cfg("gemini_api_key", "GEMINI_API_KEY", ""),
+            GeminiApiHost = Cfg("gemini_api_host", "GEMINI_API_HOST", "https://generativelanguage.googleapis.com"),
             OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
+            OpenRouterApiHost = Cfg("openrouter_api_host", "OPENROUTER_API_HOST", "https://openrouter.ai"),
             AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
             AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),
             AzureOpenAiDeployment = Cfg("azure_openai_deployment", "AZURE_OPENAI_DEPLOYMENT", ""),
