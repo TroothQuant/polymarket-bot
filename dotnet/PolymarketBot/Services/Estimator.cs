@@ -16,8 +16,8 @@ public sealed class Estimator
         "- probability must be between 0.02 and 0.98\n" +
         "- Be well-calibrated: events you rate at 70% should happen ~70% of the time\n" +
         "- Use base rates, current knowledge, and logical reasoning\n" +
-        "- Do NOT anchor on the current market price — estimate independently\n" +
-        "- If deeply uncertain, use base rates or lean toward 0.50\n" +
+        "- The current market price reflects real-money consensus from many informed traders — treat it as a Bayesian prior. Only deviate significantly if you have strong specific reasoning.\n" +
+        "- If deeply uncertain, stay close to the market price\n" +
         "- Keep reasoning under 50 words";
 
     private readonly BotConfig _config;
@@ -71,6 +71,14 @@ public sealed class Estimator
 
         var fairProb = trimmed.Average();
         var confidence = rawEstimates.Count > 1 ? StdDev(rawEstimates) : 1.0;
+
+        // Confidence filter: skip if ensemble disagreement is too high
+        if (rawEstimates.Count >= 2 && confidence > _config.MaxEstimateStd)
+        {
+            _log.LogInformation("SKIP (low confidence): {Question} std={Std:F3} > max={Max:F3}",
+                Truncate(market.Question, 50), confidence, _config.MaxEstimateStd);
+            return null;
+        }
 
         _log.LogInformation("Estimate: {Question} -> {Prob:P2} (n={Count}, std={Std:F3})",
             Truncate(market.Question, 50), fairProb, rawEstimates.Count, confidence);
@@ -203,6 +211,7 @@ public sealed class Estimator
             $"Description: {desc}\n" +
             $"Category: {market.Category}\n" +
             $"Resolution date: {(string.IsNullOrEmpty(market.EndDate) ? "Unknown" : market.EndDate)}\n" +
+            $"Current market price: YES at {market.OutcomeYesPrice:P0} / NO at {market.OutcomeNoPrice:P0}\n" +
             "\n" +
             "Estimate the probability this resolves YES. Output JSON only.";
     }

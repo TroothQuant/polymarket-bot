@@ -17,21 +17,23 @@ public sealed class BotConfig
 
     // Scan
     public int ScanIntervalMinutes { get; init; } = 10;
-    public double MinLiquidity { get; init; } = 5000.0;
+    public double MinLiquidity { get; init; } = 10000.0;
     public double MinVolume24Hr { get; init; } = 1000.0;
-    public double MinTimeToResolutionHours { get; init; } = 24.0;
+    public double MinTimeToResolutionHours { get; init; } = 48.0;
     public double MinMarketPrice { get; init; } = 0.10;
-    public int MarketsPerCycle { get; init; } = 30;
+    public int MarketsPerCycle { get; init; } = 15;
+    public double MaxSpread { get; init; } = 0.04;
 
     // Estimation
     public string ClaudeModel { get; init; } = "claude-sonnet-4-20250514";
-    public int EnsembleSize { get; init; } = 5;
+    public int EnsembleSize { get; init; } = 3;
     public double EnsembleTemperature { get; init; } = 0.7;
     public int MaxEstimateTokens { get; init; } = 1024;
+    public double MaxEstimateStd { get; init; } = 0.10;
 
     // Sizing
-    public double KellyFraction { get; init; } = 0.25;
-    public double MinEdge { get; init; } = 0.08;
+    public double KellyFraction { get; init; } = 0.15;
+    public double MinEdge { get; init; } = 0.12;
     public double MinTradeUsd { get; init; } = 0.5;
 
     // Risk
@@ -40,11 +42,11 @@ public sealed class BotConfig
     public double MaxCategoryExposurePct { get; set; } = 0.80;
     public double DailyStopLossPct { get; set; } = 0.20;
     public double MaxDrawdownPct { get; set; } = 0.50;
-    public int MaxConcurrentPositions { get; set; } = 20;
+    public int MaxConcurrentPositions { get; set; } = 8;
 
     // Position review / exit
     public bool EnablePositionReview { get; init; } = true;
-    public double PositionStopLossPct { get; init; } = 0.30;
+    public double PositionStopLossPct { get; init; } = 0.20;
     public double TakeProfitPrice { get; init; } = 0.95;
     public double ExitEdgeBuffer { get; init; } = 0.05;
     public double ReviewReestimateThresholdPct { get; init; } = 0.10;
@@ -107,19 +109,21 @@ public sealed class BotConfig
         {
             LiveTrading = Cfg("live_trading", "LIVE_TRADING", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
             ScanIntervalMinutes = int.Parse(Cfg("scan_interval_minutes", "SCAN_INTERVAL_MINUTES", "10")),
-            MinLiquidity = double.Parse(Cfg("min_liquidity", "MIN_LIQUIDITY", "5000")),
+            MinLiquidity = double.Parse(Cfg("min_liquidity", "MIN_LIQUIDITY", "10000")),
             MinVolume24Hr = double.Parse(Cfg("min_volume_24hr", "MIN_VOLUME_24HR", "1000")),
-            MinTimeToResolutionHours = double.Parse(Cfg("min_time_to_resolution_hours", "MIN_TIME_TO_RESOLUTION_HOURS", "24")),
+            MinTimeToResolutionHours = double.Parse(Cfg("min_time_to_resolution_hours", "MIN_TIME_TO_RESOLUTION_HOURS", "48")),
             MinMarketPrice = double.Parse(Cfg("min_market_price", "MIN_MARKET_PRICE", "0.10")),
-            MarketsPerCycle = int.Parse(Cfg("markets_per_cycle", "MARKETS_PER_CYCLE", "30")),
+            MarketsPerCycle = int.Parse(Cfg("markets_per_cycle", "MARKETS_PER_CYCLE", "15")),
+            MaxSpread = double.Parse(Cfg("max_spread", "MAX_SPREAD", "0.04")),
             ClaudeModel = Cfg("claude_model", "CLAUDE_MODEL", "claude-sonnet-4-20250514"),
-            EnsembleSize = int.Parse(Cfg("ensemble_size", "ENSEMBLE_SIZE", "5")),
+            EnsembleSize = int.Parse(Cfg("ensemble_size", "ENSEMBLE_SIZE", "3")),
             EnsembleTemperature = double.Parse(Cfg("ensemble_temperature", "ENSEMBLE_TEMPERATURE", "0.7")),
-            KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.25")),
-            MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.08")),
+            MaxEstimateStd = double.Parse(Cfg("max_estimate_std", "MAX_ESTIMATE_STD", "0.10")),
+            KellyFraction = double.Parse(Cfg("kelly_fraction", "KELLY_FRACTION", "0.15")),
+            MinEdge = double.Parse(Cfg("min_edge", "MIN_EDGE", "0.12")),
             MinTradeUsd = double.Parse(Cfg("min_trade_usd", "MIN_TRADE_USD", "0.5")),
             EnablePositionReview = Cfg("enable_position_review", "ENABLE_POSITION_REVIEW", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
-            PositionStopLossPct = double.Parse(Cfg("position_stop_loss_pct", "POSITION_STOP_LOSS_PCT", "0.30")),
+            PositionStopLossPct = double.Parse(Cfg("position_stop_loss_pct", "POSITION_STOP_LOSS_PCT", "0.20")),
             TakeProfitPrice = double.Parse(Cfg("take_profit_price", "TAKE_PROFIT_PRICE", "0.95")),
             ExitEdgeBuffer = double.Parse(Cfg("exit_edge_buffer", "EXIT_EDGE_BUFFER", "0.05")),
             ReviewReestimateThresholdPct = double.Parse(Cfg("review_reestimate_threshold_pct", "REVIEW_REESTIMATE_THRESHOLD_PCT", "0.10")),
@@ -129,7 +133,7 @@ public sealed class BotConfig
             MaxCategoryExposurePct = double.Parse(Cfg("max_category_exposure_pct", "MAX_CATEGORY_EXPOSURE_PCT", "0.80")),
             DailyStopLossPct = double.Parse(Cfg("daily_stop_loss_pct", "DAILY_STOP_LOSS_PCT", "0.20")),
             MaxDrawdownPct = double.Parse(Cfg("max_drawdown_pct", "MAX_DRAWDOWN_PCT", "0.50")),
-            MaxConcurrentPositions = int.Parse(Cfg("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "20")),
+            MaxConcurrentPositions = int.Parse(Cfg("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "8")),
             InitialBankroll = double.Parse(Cfg("initial_bankroll", "INITIAL_BANKROLL", "10000")),
             AnthropicApiKey = Cfg("anthropic_api_key", "ANTHROPIC_API_KEY", ""),
             PolymarketPrivateKey = Cfg("polymarket_private_key", "POLYMARKET_PRIVATE_KEY", ""),

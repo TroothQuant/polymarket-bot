@@ -21,8 +21,8 @@ Rules:
 - probability must be between 0.02 and 0.98
 - Be well-calibrated: events you rate at 70% should happen ~70% of the time
 - Use base rates, current knowledge, and logical reasoning
-- Do NOT anchor on the current market price — estimate independently
-- If deeply uncertain, use base rates or lean toward 0.50
+- The current market price reflects real-money consensus from many informed traders — treat it as a Bayesian prior. Only deviate significantly if you have strong specific reasoning.
+- If deeply uncertain, stay close to the market price
 - Keep reasoning under 50 words"""
 
 
@@ -33,7 +33,8 @@ def _build_user_prompt(market: MarketInfo) -> str:
         f"Event: {market.event_title}\n"
         f"Description: {desc}\n"
         f"Category: {market.category}\n"
-        f"Resolution date: {market.end_date or 'Unknown'}\n\n"
+        f"Resolution date: {market.end_date or 'Unknown'}\n"
+        f"Current market price: YES at {market.outcome_yes_price:.0%} / NO at {market.outcome_no_price:.0%}\n\n"
         f"Estimate the probability this resolves YES. Output JSON only."
     )
 
@@ -78,6 +79,14 @@ class Estimator:
 
         fair_prob = statistics.mean(trimmed)
         confidence = statistics.stdev(raw_estimates) if len(raw_estimates) > 1 else 1.0
+
+        # Confidence filter: skip if ensemble disagreement is too high
+        if len(raw_estimates) >= 2 and confidence > self.config.max_estimate_std:
+            log.info(
+                f"SKIP (low confidence): {market.question[:50]}... "
+                f"std={confidence:.3f} > max={self.config.max_estimate_std:.3f}"
+            )
+            return None
 
         log.info(
             f"Estimate: {market.question[:50]}... -> {fair_prob:.2%} "

@@ -194,6 +194,10 @@ class MarketScanner:
             best_ask = float(mkt.get("bestAsk", 0) or 0)
             spread = best_ask - best_bid if best_ask > best_bid else 0.0
 
+            # Filter wide spreads — indicates thin liquidity and poor fill quality
+            if best_bid > 0 and best_ask > 0 and spread > self.config.max_spread:
+                return None
+
             question = mkt.get("question", event_title)
             slug = mkt.get("slug", "")
             mkt_description = mkt.get("description", description)

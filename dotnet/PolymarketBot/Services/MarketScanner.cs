@@ -191,6 +191,10 @@ public sealed class MarketScanner
             var bestAsk = mkt.GetDoubleOrDefault("bestAsk");
             var spread = bestAsk > bestBid ? bestAsk - bestBid : 0.0;
 
+            // Filter wide spreads — indicates thin liquidity and poor fill quality
+            if (bestBid > 0 && bestAsk > 0 && spread > _config.MaxSpread)
+                return null;
+
             return new MarketInfo
             {
                 ConditionId = mkt.GetPropertyOrDefault("conditionId", ""),
