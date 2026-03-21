@@ -4,13 +4,14 @@ Running notes between Claude Code sessions. Not a changelog — just current sta
 
 ---
 
-## Current State (as of 2026-03-19)
+## Current State (as of 2026-03-21)
 
 - **Mode:** LIVE on Polygon (chain ID 137)
 - **Wallet:** Gnosis Safe (`polymarket_signature_type: 1`)
 - **Active implementation:** .NET (run via `run-bot.bat` or `dotnet run -- --console`)
-- **Dashboard:** `run-dashboard.bat`
-- **Multi-provider:** enabled — Anthropic + Gemini + OpenRouter all validating successfully
+- **Dashboard:** `run-dashboard.bat` or `run-dashboard.vbs` (no terminal window)
+- **Active providers:** Anthropic + Azure OpenAI (Gemini disabled via `gemini_enabled: false` — free-tier rate limits)
+- **Settings:** persisted to `dashboard-settings.json` in bot root
 
 ---
 
@@ -65,6 +66,19 @@ Winner `⭐` is logged; final estimate = trimmed mean of per-provider means (equ
 
 ---
 
+## New Features (recent additions)
+
+- **Per-provider enable/disable flags** — `anthropic_enabled`, `gemini_enabled`, `openai_enabled`, `openrouter_enabled`, `azure_openai_enabled` in config (all default `true`). A provider is active only if enabled AND api_key is non-empty.
+- **Provider rate-limit cooldown (.NET)** — `_rateLimitedThisCycle: HashSet<string>`. Providers that give up on 429 this cycle are skipped instantly. `ResetCycle()` called at start of each cycle from `Program.cs`.
+- **Config dump at startup** — Program.cs logs full config after banner in 4 sections: `── AI ──`, `── RISK ──`, `── SCAN ──`, `── EXITS ──`
+- **Expanded startup email** — `NotifyStarted` builds 4-section email: Portfolio / AI / Risk limits / Scan
+- **Log copy button** — clipboard copy in dashboard log panel, 1.5s `✓` feedback
+- **Dashboard settings persistence** — `read-settings`/`write-settings` IPC; stores lang, theme, bot-mode, bot-verbose, bot-console, panel sizes in `dashboard-settings.json`
+- **Panel size persistence** — `dragResize` `onDone` callback saves panel dimensions to settings
+- **Dashboard icon** — run `node setup-icon.js` once from `dashboard/` to generate `icon.png`
+
+---
+
 ## Key Features (all implemented, both Python + .NET)
 
 ### Ghost Position Detection
@@ -98,6 +112,14 @@ Pre-scan check uses `price + 0.02` (aggressive price after 2-tick BUY adjustment
 ### HTML Emails
 
 All notifications use HTML templates with color-coded event types. Events: started, trade, sell, topup_sell, ghost_removed, resolved, halted, daily_reset, error, stopped.
+
+---
+
+## Known Issues / Notes
+
+- **Gemini free tier** rate-limits heavily in multi-provider mode — disable with `"gemini_enabled": false` in config
+- **Azure OpenAI** requires `azure_openai_deployment` to be set (the deployment name, e.g. `gpt-4o-mini`) — not the model name
+- **Config is read at startup only** — both Python and .NET load config once. Restart required for any config changes to take effect.
 
 ---
 

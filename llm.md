@@ -33,15 +33,17 @@ Single `BotConfig` dataclass. Load priority: **CLI arg → env var → `polymark
 
 Per-provider credentials + models (each provider fully independent):
 
-| Provider | Key | Host | Model | Default model |
-|---|---|---|---|---|
-| Anthropic | `anthropic_api_key` | `anthropic_api_host` | `anthropic_model` | `claude-sonnet-4-6` |
-| OpenAI | `openai_api_key` | `openai_api_host` | `openai_model` | `gpt-4o` |
-| Gemini | `gemini_api_key` | `gemini_api_host` | `gemini_model` | `gemini-2.0-flash` |
-| OpenRouter | `openrouter_api_key` | `openrouter_api_host` | `openrouter_model` | (set manually) |
-| Azure OpenAI | `azure_openai_api_key` | `azure_openai_endpoint` | `azure_openai_deployment` | (set manually) |
+| Provider | Key | Host | Model | Default model | Enabled flag |
+|---|---|---|---|---|---|
+| Anthropic | `anthropic_api_key` | `anthropic_api_host` | `anthropic_model` | `claude-sonnet-4-6` | `anthropic_enabled` (default `true`) |
+| OpenAI | `openai_api_key` | `openai_api_host` | `openai_model` | `gpt-4o` | `openai_enabled` (default `true`) |
+| Gemini | `gemini_api_key` | `gemini_api_host` | `gemini_model` | `gemini-2.0-flash` | `gemini_enabled` (default `true`) |
+| OpenRouter | `openrouter_api_key` | `openrouter_api_host` | `openrouter_model` | (set manually) | `openrouter_enabled` (default `true`) |
+| Azure OpenAI | `azure_openai_api_key` | `azure_openai_endpoint` | `azure_openai_deployment` | (set manually) | `azure_openai_enabled` (default `true`) |
 
 Azure also: `azure_openai_api_version` (default `2024-02-01`).
+
+**Per-provider enable flag**: a provider is only active if `*_enabled = true` AND its `api_key` is non-empty. Set `gemini_enabled: false` to skip Gemini without removing its key (useful for rate-limit situations).
 
 **Backward compat**: loading `claude_model` or `ai_model` from JSON still works — they populate `anthropic_model` as a fallback.
 
@@ -97,13 +99,14 @@ Completed trade. Key fields: `trade_id`, `condition_id`, `action` (BUY/SELL), `p
 ### Startup sequence
 1. Parse CLI args
 2. Setup logging
-3. Load portfolio snapshot
-4. Create services: MarketScanner, Estimator, Notifier
-5. **Validate API keys** — `estimator.validate_api_key()`:
+3. Print banner + full config dump in 4 sections: `── AI ──`, `── RISK ──`, `── SCAN ──`, `── EXITS ──`
+4. Load portfolio snapshot
+5. Create services: MarketScanner, Estimator, Notifier
+6. **Validate API keys** — `estimator.validate_api_key()`:
    - Single-provider mode: validate the one configured provider. HTTP 401/403 → exit.
    - Multi-provider mode: validate ALL configured providers. Log `✓`/`✗` per provider. Only exits if ALL fail.
-6. Initialize live trader if `live_trading=true`
-7. Enter main loop
+7. Initialize live trader if `live_trading=true`
+8. Enter main loop
 
 ### Cycle structure
 
@@ -201,6 +204,18 @@ If `std_dev > max_estimate_std` after collecting all estimates → skip market. 
 - .NET: HTTP 429/529 → exponential backoff 10s → 20s → 40s (up to 3 retries)
 - OpenAI/Gemini/OpenRouter: HTTP 429 → sleep 5s (Python), same backoff (.NET)
 
+### .NET-specific: per-cycle rate-limit tracking
+
+`_rateLimitedThisCycle: HashSet<string>` — providers that exhausted retries on 429 this cycle. `ResetCycle()` must be called at the start of each cycle from `Program.cs`. Any provider in this set is skipped instantly in `EstimateMultiAsync` (no retries attempted). Clears on next cycle.
+
+### .NET-specific: `ParseProviderResponse` fix
+
+`ParseProviderResponse(string provider, string body)` now takes an explicit `provider` parameter. Previously it used `_config.AiProvider` to decide the parse path, which was a bug in multi-provider mode — it always parsed every response as Anthropic format. Now each provider's response is parsed with the correct format.
+
+### .NET-specific: log message provider param
+
+All log messages in `SingleCallAsync` now use the `provider` parameter (not `_config.AiProvider`), so multi-provider logs correctly show which provider each call belongs to.
+
 ---
 
 ## Portfolio (`python/portfolio.py` / `dotnet/Services/Portfolio.cs`)
@@ -254,6 +269,8 @@ Pre-scan check uses `bestPrice + 0.02` (aggressive price after 2-tick BUY adjust
 
 Same as previously documented. Notifier sends HTML emails with color-coded event types including `ghost_removed` (purple).
 
+`NotifyStarted` accepts no extra params — reads `_config` directly to build a 4-section startup email: **Portfolio** (bankroll, mode, wallet) / **AI** (provider, model, multi mode, enabled providers) / **Risk limits** (position pct, exposure, stop-loss, drawdown) / **Scan** (interval, markets/cycle, liquidity, spread).
+
 ---
 
 ## Dashboard (`dashboard/`)
@@ -276,6 +293,20 @@ Fields with `providers: [...]` are **hidden** when the active provider doesn't m
 
 ### IPC: `fetch-ai-models`
 `main.js` IPC handler `fetch-ai-models` uses Node `fetch()` (available in Electron 33 / Node 20) to call provider model APIs from the main process. Returns `{ models: [{id, name}] }` or `{ error }`.
+
+### IPC: `read-settings` / `write-settings`
+Read/write `dashboard-settings.json` in the bot root directory. Persisted settings: `lang`, `theme`, `bot-mode`, `bot-verbose`, `bot-console`, `panel-left-w`, `panel-upper-h`. Loaded at startup; written on any change.
+
+### Log copy button
+Clipboard copy button in the log panel. Uses the Clipboard API; shows `✓` feedback for 1.5s before reverting.
+
+### Panel resize persistence
+`dragResize(handle, vertical, onDelta, onDone)` — `onDone` callback fires when drag ends and saves panel size to `dashboard-settings.json` via `write-settings` IPC.
+
+### Launcher / icon
+- `run-dashboard.bat` uses `start "" electron.exe .` — no persistent terminal window
+- `run-dashboard.vbs` — alternative launcher with no terminal at all
+- `setup-icon.js` — generates `icon.png` via pure Node.js PNG encoding (no native deps). Run once: `node setup-icon.js` from `dashboard/`
 
 ---
 

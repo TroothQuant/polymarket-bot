@@ -112,6 +112,7 @@ dotnet/PolymarketBot/
 9. `Persistence` → save snapshot + append trade
 
 **External APIs:**
+
 - Gamma API (`gamma-api.polymarket.com/events`) — market discovery
 - CLOB API (`clob.polymarket.com`) — price quotes + live orders
 - Anthropic / OpenAI / Gemini / OpenRouter / Azure API — AI estimation
@@ -120,8 +121,13 @@ dotnet/PolymarketBot/
 
 - **Multi-provider AI estimation** — `multi_provider: true` queries ALL configured providers simultaneously. Each provider gets `ceil(ensemble_size / num_providers)` calls. Scored by `conviction × confidence` (conviction = |estimate - market_price|, confidence = 1/(std_dev + 0.01)). Final estimate = trimmed mean of per-provider means. Bot stops only if ALL providers fail validation.
 - **Per-provider model fields** — `anthropic_model`, `openai_model`, `gemini_model`, `openrouter_model` are fully independent. No fallback between providers. Defaults: Anthropic=`claude-sonnet-4-6`, OpenAI=`gpt-4o`, Gemini=`gemini-2.0-flash`.
+- **Per-provider `*_enabled` flags** — each provider has `anthropic_enabled`, `gemini_enabled`, `openai_enabled`, `openrouter_enabled`, `azure_openai_enabled` (default true). A provider is only included if BOTH `*_enabled: true` AND its API key is set. Checked in `_get_configured_providers()` (Python) and `GetConfiguredProviders()` (.NET).
 - **No legacy `claude_model`/`ai_model` fields** — removed from codebase. JSON values are still read for backward compat (populate `anthropic_model`), but don't create new configs with them.
 - **API key validation at startup** — both implementations make a minimal 1-token call per configured provider. Multi mode logs `✓`/`✗` per provider; continues if at least one passes.
+- **Provider rate-limit cooldown** — in multi-provider mode (.NET), if a provider exhausts all 429 retries for a market, it's added to `_rateLimitedThisCycle` (HashSet) and skipped instantly for all remaining markets that cycle. `ResetCycle()` clears it at the start of each new cycle. Prevents one rate-limited provider from adding 70+ seconds of retry delays per cycle.
+- **Bug fix: ParseProviderResponse** — was always using `_config.AiProvider` to decide parse format (always parsed as anthropic in multi-mode). Now takes `provider` string parameter. This caused azure_openai responses to be parsed as Anthropic format → KeyNotFoundException.
+- **Config dump at startup** — after the banner, logs 4 sections: `── AI ──`, `── RISK ──`, `── SCAN ──`, `── EXITS ──` with all key parameters. Helps verify which settings are active.
+- **Startup email expanded** — `NotifyStarted`/`notify_started` now shows 4 sections: Portfolio (mode/bankroll/positions), AI (provider/ensemble/min_edge), Risk limits (all 6), Scan (interval/markets/liquidity/volume/spread).
 - **Binary markets only** — filters out non-binary outcomes
 - **Estimator system prompt** shows current market price as a Bayesian prior — Claude is told to treat market consensus as an anchor
 - **Anthropic TextBlock safety** — `response.content[0]` can be ThinkingBlock/ToolUseBlock etc. Always use `next(b for b in response.content if hasattr(b, "text"), None)` not `.content[0].text`
@@ -147,15 +153,16 @@ dotnet/PolymarketBot/
 - **.NET Estimator** uses raw HttpClient to provider REST APIs (no SDK for non-Anthropic providers). Python uses `anthropic` SDK for Anthropic, `requests` for others.
 - **.NET CLOB auth** implements EIP-712 signing + HMAC-SHA256 using Nethereum.Signer
 - **Auto-claim** (.NET only) — WON position detected → `ClobApiClient.RedeemWinningPositionAsync()` submits raw EIP-155 tx to Polygon
+- **Azure OpenAI config note** — `azure_openai_deployment` must match the deployment name exactly (e.g. `gpt-4o-mini`). Without it, azure_openai is excluded from `GetConfiguredProviders()`.
 
 ## Dashboard (`dashboard/`)
 
 Electron desktop app for real-time bot monitoring.
 
-### Running
+### Dashboard Running
 
 ```bash
-# Windows: double-click run-dashboard.bat
+# Windows: double-click run-dashboard.bat (detaches electron, closes CMD immediately)
 # Or:
 cd dashboard && npm install && npm start
 ```
@@ -164,12 +171,14 @@ cd dashboard && npm install && npm start
 
 ```text
 dashboard/
-  main.js       Main process: IPC handlers, file watchers, bot process management, fetch-ai-models handler
-  preload.js    Context bridge (exposes api.* including fetchAiModels)
-  renderer.js   All UI logic: stats, tables, charts, log, per-provider config sections
-  index.html    UI shell
-  styles.css    Dark/light theme
-  package.json  electron ^33.0.0 devDependency
+  main.js            Main process: IPC handlers, file watchers, bot process management, fetch-ai-models handler
+  preload.js         Context bridge (exposes api.* including fetchAiModels)
+  renderer.js        All UI logic: stats, tables, charts, log, per-provider config sections
+  index.html         UI shell
+  styles.css         Dark/light theme
+  package.json       electron ^33.0.0 devDependency
+  setup-icon.js      Icon generator — run once: `node setup-icon.js`. Generates icon.png (256×256, Polymarket blue #1652F0, white "P", rounded corners) using pure Node.js (zlib + manual PNG encoding).
+  [runtime]          dashboard-settings.json — created at runtime in bot root (next to polymarket_bot_config.json). Stores persistent settings (lang, theme, panel sizes, bot options).
 ```
 
 ### Config Editor — Provider Sections
@@ -185,6 +194,7 @@ The `fetch-ai-models` IPC handler in `main.js` calls each provider's live model 
 - **Bot spawn**: `shell: false` for direct `.exe` path. `shell: true` for `python`/`dotnet run`.
 - **Log isolation**: `logClearedAt = Date.now()` on load hides pre-existing entries.
 - **Log rotation**: `bot.log` → `bot-TIMESTAMP.log` before each new bot start.
+- **Log copy button**: `⎘ copy` button in log controls (next to export). Copies current visible log lines to clipboard. Shows `✓` for 1.5s as confirmation. No new IPC channel needed (clipboard API).
 - **Timestamp normalization**: `parseTs(ts)` handles .NET's 7-decimal `ToString("o")`.
 - **Charts**: `animation: false` init; `chart.update('none')` — no flicker.
 - **FileShare (.NET)**: `new FileStream(..., FileShare.ReadWrite)` for concurrent dashboard + bot access.
@@ -193,10 +203,14 @@ The `fetch-ai-models` IPC handler in `main.js` calls each provider's live model 
 - **`t` variable shadowing**: `refresh()` must use `[p, tr, l]` not `[p, t, l]`.
 - **i18n**: `TRANS = { ru:{}, en:{} }` + `t(key,...args)`. Text-node update in `applyLang()`.
 - **Tooltips**: single `position:fixed` div in `<body>` — avoids `overflow:hidden` clipping.
-- **Theme**: `body.light` CSS class. `localStorage.theme`.
+- **Settings persistence**: `dashboard-settings.json` in bot root, read/written via IPC `read-settings`/`write-settings`. Replaces localStorage. Loaded async at boot before `initTheme`/`initLang`/`setupResize`. Persists: `lang`, `theme`, `bot-mode`, `bot-verbose`, `bot-console`, `panel-left-w`, `panel-upper-h`.
+- **Panel sizes persist**: `dragResize` has `onDone` callback. Raw `newW`/`newH` values saved via `setSetting` on mouseup. Restored in `setupResize` before wiring drag handlers.
+- **No-terminal launch**: `run-dashboard.bat` uses `start "" "electron.exe" .` to detach electron as a separate process and immediately close CMD. Alternative: `run-dashboard.vbs` for a truly hidden launch.
+- **Icon**: `dashboard/setup-icon.js` — run once to generate `icon.png`. Referenced in `BrowserWindow` `icon` option.
+- **Rate-limit cooldown** (.NET): `_rateLimitedThisCycle` (HashSet) tracks providers that exhausted 429 retries for a market. Skipped instantly for remaining markets. Cleared by `ResetCycle()` at start of each cycle.
 
 ### IPC Channels
 
-`read-portfolio`, `read-trades`, `read-logs`, `read-config`, `write-config`, `get-data-dir`, `set-data-dir`, `browse-data-dir`, `bot-status`, `start-bot`, `stop-bot`, `save-file`, `open-logs-dir`, `fetch-ai-models`
+`read-portfolio`, `read-trades`, `read-logs`, `read-config`, `write-config`, `get-data-dir`, `set-data-dir`, `browse-data-dir`, `bot-status`, `start-bot`, `stop-bot`, `save-file`, `open-logs-dir`, `fetch-ai-models`, `read-settings`, `write-settings`
 
 Push events (main → renderer): `file-changed`, `bot-output`, `bot-stopped`
