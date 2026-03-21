@@ -33,6 +33,7 @@ function getConfigPath() {
 
 // ── Window ────────────────────────────────────────────────────────────────
 function createWindow() {
+  const iconPath = path.join(__dirname, 'icon.png')
   mainWindow = new BrowserWindow({
     width: 1680,
     height: 980,
@@ -45,6 +46,7 @@ function createWindow() {
     },
     title: 'Polymarket Bot Dashboard',
     backgroundColor: '#0a0e1a',
+    icon: require('fs').existsSync(iconPath) ? iconPath : undefined,
     show: false,
     autoHideMenuBar: true,
   })
@@ -303,6 +305,21 @@ function setupIPC() {
 
   ipcMain.handle('open-logs-dir', () => {
     shell.openPath(dataDir)
+  })
+
+  // ── UI settings (persisted to file) ──────────────────────────────────
+  function settingsPath() {
+    return path.join(path.dirname(getConfigPath()), 'dashboard-settings.json')
+  }
+  ipcMain.handle('read-settings', () => {
+    try {
+      const f = settingsPath()
+      if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8'))
+    } catch {}
+    return {}
+  })
+  ipcMain.handle('write-settings', (_, data) => {
+    try { fs.writeFileSync(settingsPath(), JSON.stringify(data, null, 2), 'utf8') } catch {}
   })
 
   ipcMain.handle('save-file', async (_, { content, defaultName }) => {

@@ -25,6 +25,10 @@ contextBridge.exposeInMainWorld('api', {
   saveFile:      (opts)  => ipcRenderer.invoke('save-file', opts),
   openLogsDir:   ()      => ipcRenderer.invoke('open-logs-dir'),
 
+  // UI settings
+  readSettings:  ()      => ipcRenderer.invoke('read-settings'),
+  writeSettings: (data)  => ipcRenderer.invoke('write-settings', data),
+
   // AI provider model listing
   fetchAiModels: (opts)  => ipcRenderer.invoke('fetch-ai-models', opts),
 

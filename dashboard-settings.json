@@ -1,0 +1,7 @@
+{
+  "lang": "en",
+  "bot-mode": "dotnet",
+  "bot-verbose": true,
+  "bot-console": true,
+  "panel-left-w": 1074
+}

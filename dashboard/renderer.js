@@ -1,5 +1,10 @@
 'use strict'
 
+// ── Settings (file-backed, loaded async at boot) ───────────────────────────
+let _settings = {}
+function getSetting(key, def) { return key in _settings ? _settings[key] : def }
+function setSetting(key, val) { _settings[key] = val; api.writeSettings(_settings) }
+
 // ── Translations ──────────────────────────────────────────────────────────
 const TRANS = {
   ru: {
@@ -121,7 +126,7 @@ const TRANS = {
   },
 }
 
-let currentLang = localStorage.getItem('lang') || 'ru'
+let currentLang = 'ru' // overwritten after settings load
 
 function t(key, ...args) {
   const val = TRANS[currentLang]?.[key] ?? TRANS.en[key]
@@ -234,6 +239,9 @@ function parseTs(ts) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 async function init() {
+  _settings = (await api.readSettings()) || {}
+  currentLang = getSetting('lang', 'ru')
+
   const dataDir = await api.getDataDir()
   document.getElementById('data-dir-label').textContent = dataDir
   document.getElementById('cfg-datadir-val').textContent = dataDir
@@ -764,23 +772,37 @@ function updateBotStatusBadge() {
 
 // ── Resize handles ────────────────────────────────────────────────────────
 function setupResize() {
+  const grid  = $('main-grid')
+  const upper = $('right-upper')
+
+  // Restore saved sizes
+  const savedW = getSetting('panel-left-w', null)
+  if (savedW) grid.style.gridTemplateColumns = `${savedW}px 6px 1fr`
+  const savedH = getSetting('panel-upper-h', null)
+  if (savedH) upper.style.height = `${savedH}px`
+
   // Horizontal: left-col / right-col
-  const grid = $('main-grid')
-  dragResize($('rh-main'), false, delta => {
-    const leftW = $('left-col').offsetWidth
-    const newW = Math.max(600, leftW + delta)
-    grid.style.gridTemplateColumns = `${newW}px 6px 1fr`
-  })
+  let lastW = null
+  dragResize($('rh-main'), false,
+    delta => {
+      lastW = Math.max(600, $('left-col').offsetWidth + delta)
+      grid.style.gridTemplateColumns = `${lastW}px 6px 1fr`
+    },
+    () => { if (lastW !== null) setSetting('panel-left-w', lastW) }
+  )
 
   // Vertical: right-upper / log
-  const upper = $('right-upper')
-  dragResize($('rh-right'), true, delta => {
-    const newH = Math.max(80, upper.offsetHeight + delta)
-    upper.style.height = newH + 'px'
-  })
+  let lastH = null
+  dragResize($('rh-right'), true,
+    delta => {
+      lastH = Math.max(80, upper.offsetHeight + delta)
+      upper.style.height = `${lastH}px`
+    },
+    () => { if (lastH !== null) setSetting('panel-upper-h', lastH) }
+  )
 }
 
-function dragResize(handle, vertical, onDelta) {
+function dragResize(handle, vertical, onDelta, onDone) {
   let active = false, last = 0
   handle.addEventListener('mousedown', e => {
     active = true; last = vertical ? e.clientY : e.clientX
@@ -798,6 +820,7 @@ function dragResize(handle, vertical, onDelta) {
     if (!active) return
     active = false; handle.classList.remove('rh-active')
     document.body.style.cursor = ''; document.body.style.userSelect = ''
+    if (onDone) onDone()
   })
 }
 
@@ -1061,9 +1084,9 @@ async function startBot() {
     return
   }
   // Restore last-used settings
-  const savedMode    = localStorage.getItem('bot-mode')    || 'python'
-  const savedVerbose = localStorage.getItem('bot-verbose') === 'true'
-  const savedConsole = localStorage.getItem('bot-console') === 'true'
+  const savedMode    = getSetting('bot-mode',    'dotnet')
+  const savedVerbose = getSetting('bot-verbose', false)
+  const savedConsole = getSetting('bot-console', false)
   const modeInput = document.querySelector(`input[name="bot-mode"][value="${savedMode}"]`)
   if (modeInput) modeInput.checked = true
   $('opt-verbose').checked = savedVerbose
@@ -1074,10 +1097,9 @@ async function startBot() {
 async function confirmStart() {
   const mode = document.querySelector('input[name="bot-mode"]:checked')?.value || 'python'
   const verbose = $('opt-verbose').checked, consoleFl = $('opt-console').checked
-  // Persist for next session
-  localStorage.setItem('bot-mode', mode)
-  localStorage.setItem('bot-verbose', verbose)
-  localStorage.setItem('bot-console', consoleFl)
+  setSetting('bot-mode',    mode)
+  setSetting('bot-verbose', verbose)
+  setSetting('bot-console', consoleFl)
   $('start-modal').classList.add('hidden')
   const result = await api.startBot({ mode, verbose, console: consoleFl })
   if (result.error) { alert(t('startError', result.error)); return }
@@ -1094,15 +1116,14 @@ async function confirmStart() {
 
 // ── Theme toggle ──────────────────────────────────────────────────────────
 function initTheme() {
-  const saved = localStorage.getItem('theme') || 'dark'
-  if (saved === 'light') document.body.classList.add('light')
+  if (getSetting('theme', 'dark') === 'light') document.body.classList.add('light')
   const btn = $('btn-theme')
   if (btn) {
     btn.textContent = document.body.classList.contains('light') ? '🌙' : '☀'
     btn.addEventListener('click', () => {
       document.body.classList.toggle('light')
       const isLight = document.body.classList.contains('light')
-      localStorage.setItem('theme', isLight ? 'light' : 'dark')
+      setSetting('theme', isLight ? 'light' : 'dark')
       btn.textContent = isLight ? '🌙' : '☀'
     })
   }
@@ -1115,7 +1136,7 @@ function initLang() {
   if (btn) {
     btn.addEventListener('click', () => {
       currentLang = currentLang === 'ru' ? 'en' : 'ru'
-      localStorage.setItem('lang', currentLang)
+      setSetting('lang', currentLang)
       applyLang()
       // Re-render dynamic content with new language
       renderStats()
