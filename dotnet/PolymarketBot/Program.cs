@@ -104,6 +104,43 @@ var _modeLabel = config.MultiProvider ? "multi" : config.AiProvider;
 log.LogInformation("Ensemble: {Size}x [{Mode}]", config.EnsembleSize, _modeLabel);
 log.LogInformation(new string('=', 60));
 
+// ── Detailed config dump ─────────────────────────────────────────────────
+{
+    var enabledProviders = new System.Text.StringBuilder();
+    if (config.AnthropicEnabled  && !string.IsNullOrEmpty(config.AnthropicApiKey))  enabledProviders.Append("anthropic ");
+    if (config.OpenAiEnabled     && !string.IsNullOrEmpty(config.OpenAiApiKey))     enabledProviders.Append("openai ");
+    if (config.GeminiEnabled     && !string.IsNullOrEmpty(config.GeminiApiKey))     enabledProviders.Append("gemini ");
+    if (config.OpenRouterEnabled && !string.IsNullOrEmpty(config.OpenRouterApiKey)) enabledProviders.Append("openrouter ");
+    if (config.AzureOpenAiEnabled && !string.IsNullOrEmpty(config.AzureOpenAiApiKey)
+        && !string.IsNullOrEmpty(config.AzureOpenAiEndpoint)
+        && !string.IsNullOrEmpty(config.AzureOpenAiDeployment))                     enabledProviders.Append("azure_openai ");
+    var provStr = config.MultiProvider
+        ? $"multi ({enabledProviders.ToString().Trim()})"
+        : config.AiProvider;
+
+    log.LogInformation("── AI ──────────────────────────────────────────────────────");
+    log.LogInformation("  Provider:       {P}",  provStr);
+    log.LogInformation("  Ensemble:       {N}x  temp={T}  max_std={S:P0}",
+        config.EnsembleSize, config.EnsembleTemperature, config.MaxEstimateStd);
+    log.LogInformation("  Min edge:       {E:P0}",  config.MinEdge);
+    log.LogInformation("── RISK ─────────────────────────────────────────────────────");
+    log.LogInformation("  Max position:   {P:P0}  kelly={K:F2}",  config.MaxPositionPct, config.KellyFraction);
+    log.LogInformation("  Max exposure:   {E:P0}  max_positions={N}",  config.MaxTotalExposurePct, config.MaxConcurrentPositions);
+    log.LogInformation("  Category cap:   {C:P0}",  config.MaxCategoryExposurePct);
+    log.LogInformation("  Daily SL:       {D:P0}  max_drawdown={M:P0}",  config.DailyStopLossPct, config.MaxDrawdownPct);
+    log.LogInformation("── SCAN ─────────────────────────────────────────────────────");
+    log.LogInformation("  Interval:       {I} min  markets/cycle={M}",  config.ScanIntervalMinutes, config.MarketsPerCycle);
+    log.LogInformation("  Min liquidity:  ${L:N0}  min_volume_24h=${V:N0}",  config.MinLiquidity, config.MinVolume24Hr);
+    log.LogInformation("  Min price:      {P:P0}  max_spread={S:P0}",  config.MinMarketPrice, config.MaxSpread);
+    log.LogInformation("  Min TTR:        {H}h",  config.MinTimeToResolutionHours);
+    log.LogInformation("── EXITS ────────────────────────────────────────────────────");
+    log.LogInformation("  Stop-loss:      {SL:P0}  take-profit={TP:P0}  edge_buf={EB:P0}",
+        config.PositionStopLossPct, config.TakeProfitPrice, config.ExitEdgeBuffer);
+    log.LogInformation("  Re-estimate:    threshold={T:P0}  size={N}",
+        config.ReviewReestimateThresholdPct, config.ReviewEnsembleSize);
+    log.LogInformation(new string('=', 60));
+}
+
 if (console_)
 {
     Console.WriteLine($"\n{new string('=', 60)}");
