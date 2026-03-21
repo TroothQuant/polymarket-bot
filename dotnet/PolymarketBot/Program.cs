@@ -305,6 +305,7 @@ while (!cts.Token.IsCancellationRequested)
     }
 
     log.LogInformation("--- Cycle {Cycle} ---", cycle);
+    estimator.ResetCycle();
 
     // Sync on-chain USDC balance at start of each cycle (live trading only)
     if (trader is LiveTrader ltSync)

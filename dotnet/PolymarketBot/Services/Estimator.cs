@@ -24,6 +24,11 @@ public sealed class Estimator
     private readonly HttpClient _http;
     private readonly ILogger<Estimator> _log;
 
+    // Providers that hit 429 this cycle — skip them until ResetCycle()
+    private readonly HashSet<string> _rateLimitedThisCycle = new();
+
+    public void ResetCycle() => _rateLimitedThisCycle.Clear();
+
     public Estimator(BotConfig config, HttpClient http, ILogger<Estimator> log)
     {
         _config = config;
@@ -81,6 +86,12 @@ public sealed class Estimator
 
         foreach (var provider in configured)
         {
+            if (_rateLimitedThisCycle.Contains(provider))
+            {
+                _log.LogDebug("{Provider} skipped — rate-limited this cycle", provider);
+                continue;
+            }
+
             var probs = new List<double>();
             var pInput = 0; var pOutput = 0; var pReasoning = "";
 
@@ -208,32 +219,33 @@ public sealed class Estimator
                     {
                         var delay = backoffMs[attempt];
                         _log.LogWarning("{Provider} {Status} (attempt {A}/{Max}) — retrying in {Sec}s",
-                            _config.AiProvider, status, attempt + 1, backoffMs.Length, delay / 1000);
+                            provider, status, attempt + 1, backoffMs.Length, delay / 1000);
                         await Task.Delay(delay, ct);
                         continue;
                     }
-                    _log.LogError("{Provider} {Status}: giving up after {Max} retries for {Question}",
-                        _config.AiProvider, status, backoffMs.Length, Truncate(market.Question, 40));
+                    _log.LogError("{Provider} {Status}: giving up after {Max} retries for {Question} — skipping for rest of cycle",
+                        provider, status, backoffMs.Length, Truncate(market.Question, 40));
+                    _rateLimitedThisCycle.Add(provider);
                     return null;
                 }
 
                 if (status < 200 || status >= 300)
                 {
                     _log.LogError("{Provider} HTTP {Status}: {Body}",
-                        _config.AiProvider, status, body[..Math.Min(body.Length, 200)]);
+                        provider, status, body[..Math.Min(body.Length, 200)]);
                     return null;
                 }
 
-                return ParseProviderResponse(body);
+                return ParseProviderResponse(provider, body);
             }
             catch (JsonException ex)
             {
-                _log.LogDebug("Failed to parse estimate response: {Error}", ex.Message);
+                _log.LogDebug("{Provider} parse failed: {Error}", provider, ex.Message);
                 return null;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _log.LogDebug("{Provider} call failed: {Error}", _config.AiProvider, ex.Message);
+                _log.LogDebug("{Provider} call failed: {Error}", provider, ex.Message);
                 return null;
             }
         }
@@ -396,9 +408,9 @@ public sealed class Estimator
 
     // ── Response parsing (shared) ──────────────────────────────────────────
 
-    private CallResult? ParseProviderResponse(string body)
+    private static CallResult? ParseProviderResponse(string provider, string body)
     {
-        return _config.AiProvider.ToLowerInvariant() switch
+        return provider.ToLowerInvariant() switch
         {
             "gemini"       => ParseGeminiResponse(body),
             "openai"       => ParseOpenAiCompatResponse(body),
