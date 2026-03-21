@@ -96,12 +96,53 @@ public sealed class Notifier
     public void NotifyStarted(string mode, double bankroll, int positions)
     {
         var t = Now();
+        var c = _config;
+
+        // AI provider summary
+        string providerStr;
+        if (c.MultiProvider)
+        {
+            var enabled = new List<string>();
+            if (c.AnthropicEnabled && !string.IsNullOrEmpty(c.AnthropicApiKey))   enabled.Add("anthropic");
+            if (c.OpenAiEnabled    && !string.IsNullOrEmpty(c.OpenAiApiKey))      enabled.Add("openai");
+            if (c.GeminiEnabled    && !string.IsNullOrEmpty(c.GeminiApiKey))      enabled.Add("gemini");
+            if (c.OpenRouterEnabled && !string.IsNullOrEmpty(c.OpenRouterApiKey)) enabled.Add("openrouter");
+            if (c.AzureOpenAiEnabled && !string.IsNullOrEmpty(c.AzureOpenAiApiKey)
+                && !string.IsNullOrEmpty(c.AzureOpenAiEndpoint)
+                && !string.IsNullOrEmpty(c.AzureOpenAiDeployment))               enabled.Add("azure_openai");
+            providerStr = $"multi ({(enabled.Count > 0 ? string.Join(", ", enabled) : "none")})";
+        }
+        else
+        {
+            providerStr = c.AiProvider;
+        }
+
         var html = BuildHtml("🟢", $"Bot Started — {mode} Mode", ColStarted,
-            new[] { Section("Configuration",
-                Row("Mode", mode),
-                Row("Bankroll", $"${bankroll:F2}"),
-                Row("Open positions", positions.ToString())
-            ) }, t);
+            new[]
+            {
+                Section("Portfolio",
+                    Row("Mode",           mode),
+                    Row("Bankroll",       $"${bankroll:F2}"),
+                    Row("Open positions", positions.ToString())),
+                Section("AI",
+                    Row("Provider",       providerStr),
+                    Row("Ensemble size",  c.EnsembleSize.ToString()),
+                    Row("Temperature",    c.EnsembleTemperature.ToString("F1")),
+                    Row("Min edge",       $"{c.MinEdge:P0}")),
+                Section("Risk limits",
+                    Row("Max position",    $"{c.MaxPositionPct:P0}"),
+                    Row("Max exposure",    $"{c.MaxTotalExposurePct:P0}"),
+                    Row("Daily stop-loss", $"{c.DailyStopLossPct:P0}"),
+                    Row("Max drawdown",    $"{c.MaxDrawdownPct:P0}"),
+                    Row("Max positions",   c.MaxConcurrentPositions.ToString()),
+                    Row("Kelly fraction",  c.KellyFraction.ToString("F2"))),
+                Section("Scan",
+                    Row("Interval",       $"{c.ScanIntervalMinutes} min"),
+                    Row("Markets/cycle",  c.MarketsPerCycle.ToString()),
+                    Row("Min liquidity",  $"${c.MinLiquidity:N0}"),
+                    Row("Min volume 24h", $"${c.MinVolume24Hr:N0}"),
+                    Row("Max spread",     $"{c.MaxSpread:P0}"))
+            }, t);
         Send($"🟢 Started — {mode} mode", html);
     }
 

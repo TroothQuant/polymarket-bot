@@ -177,15 +177,53 @@ class Notifier:
     # ── Notification methods ───────────────────────────────────────────────
 
     def notify_started(self, mode: str, bankroll: float, positions: int) -> None:
+        c = self._config
         t = _now()
+
+        # AI provider summary
+        if c.multi_provider:
+            enabled = []
+            if c.anthropic_enabled and c.anthropic_api_key:   enabled.append("anthropic")
+            if c.openai_enabled and c.openai_api_key:         enabled.append("openai")
+            if c.gemini_enabled and c.gemini_api_key:         enabled.append("gemini")
+            if c.openrouter_enabled and c.openrouter_api_key: enabled.append("openrouter")
+            if c.azure_openai_enabled and c.azure_openai_api_key and c.azure_openai_endpoint and c.azure_openai_deployment:
+                enabled.append("azure_openai")
+            provider_str = f"multi ({', '.join(enabled) or 'none'})"
+        else:
+            provider_str = c.ai_provider
+
         html = _build_html(
             icon="🟢", title=f"Bot Started — {mode} Mode",
             header_bg=_COLORS["started"],
-            sections=[{"title": "Configuration", "rows": [
-                ("Mode", mode, _DARK),
-                ("Bankroll", f"${bankroll:.2f}", _DARK),
-                ("Open positions", str(positions), _DARK),
-            ]}],
+            sections=[
+                {"title": "Portfolio", "rows": [
+                    ("Mode",           mode,                       _DARK),
+                    ("Bankroll",       f"${bankroll:.2f}",         _DARK),
+                    ("Open positions", str(positions),             _DARK),
+                ]},
+                {"title": "AI", "rows": [
+                    ("Provider",       provider_str,               _DARK),
+                    ("Ensemble size",  str(c.ensemble_size),       _DARK),
+                    ("Temperature",    str(c.ensemble_temperature), _DARK),
+                    ("Min edge",       f"{c.min_edge:.0%}",        _DARK),
+                ]},
+                {"title": "Risk limits", "rows": [
+                    ("Max position",     f"{c.max_position_pct:.0%}",         _DARK),
+                    ("Max exposure",     f"{c.max_total_exposure_pct:.0%}",   _DARK),
+                    ("Daily stop-loss",  f"{c.daily_stop_loss_pct:.0%}",      _DARK),
+                    ("Max drawdown",     f"{c.max_drawdown_pct:.0%}",         _DARK),
+                    ("Max positions",    str(c.max_concurrent_positions),     _DARK),
+                    ("Kelly fraction",   str(c.kelly_fraction),               _DARK),
+                ]},
+                {"title": "Scan", "rows": [
+                    ("Interval",      f"{c.scan_interval_minutes} min",       _DARK),
+                    ("Markets/cycle", str(c.markets_per_cycle),               _DARK),
+                    ("Min liquidity", f"${c.min_liquidity:,.0f}",             _DARK),
+                    ("Min volume 24h",f"${c.min_volume_24hr:,.0f}",           _DARK),
+                    ("Max spread",    f"{c.max_spread:.0%}",                  _DARK),
+                ]},
+            ],
             time_str=t,
         )
         self.send(f"🟢 Started — {mode} mode", html)

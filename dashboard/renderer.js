@@ -22,7 +22,7 @@ const TRANS = {
     cumulativePnl: 'НАКОПЛЕННАЯ П/У', exposureByCategory: 'ПОЗИЦИИ ПО КАТЕГОРИЯМ',
     riskLimits: 'ЛИМИТЫ РИСКА', exitBreakdown: 'ПРИЧИНЫ ВЫХОДА', liveLog: 'ЖУРНАЛ',
     // Log controls
-    autoScroll: 'авто-прокрутка', folderBtn: '📂 папка', exportBtn: '⬇ экспорт', clearBtn: '✕ очистить',
+    autoScroll: 'авто-прокрутка', folderBtn: '📂 папка', exportBtn: '⬇ экспорт', copyBtn: '⎘ копировать', clearBtn: '✕ очистить',
     // Config modal
     configTitle: '⚙ Настройки', saveBtn: '💾 Сохранить', browseBtn: 'Обзор', dataDirLabel: 'Папка данных: ',
     // Start modal
@@ -82,7 +82,7 @@ const TRANS = {
     openPositions: 'OPEN POSITIONS', tradeHistory: 'TRADE HISTORY',
     cumulativePnl: 'CUMULATIVE P&L', exposureByCategory: 'EXPOSURE BY CATEGORY',
     riskLimits: 'RISK LIMITS', exitBreakdown: 'EXIT BREAKDOWN', liveLog: 'LIVE LOG',
-    autoScroll: 'auto-scroll', folderBtn: '📂 folder', exportBtn: '⬇ export', clearBtn: '✕ clear',
+    autoScroll: 'auto-scroll', folderBtn: '📂 folder', exportBtn: '⬇ export', copyBtn: '⎘ copy', clearBtn: '✕ clear',
     configTitle: '⚙ Configuration', saveBtn: '💾 Save', browseBtn: 'Browse', dataDirLabel: 'Data dir: ',
     startModalTitle: '▶ Start Bot', implLabel: 'Implementation', flagsLabel: 'Flags', launchBtn: '▶ Launch',
     colMarket: 'MARKET', colSide: 'SIDE', colEntry: 'ENTRY', colCurrent: 'CURRENT',
@@ -1152,6 +1152,19 @@ function initModals() {
 
   $('btn-open-logs-dir').addEventListener('click', () => api.openLogsDir())
   $('btn-export-log').addEventListener('click', exportLog)
+  $('btn-copy-log').addEventListener('click', () => {
+    const isVisible = l => parseTs(l.timestamp) > logClearedAt
+    const text = [...logs.filter(isVisible), ...extraLogLines.filter(isVisible)]
+      .sort((a, b) => parseTs(a.timestamp) - parseTs(b.timestamp))
+      .map(l => `${l.timestamp}\t${(l.level||'').padEnd(8)}\t${l.message||''}`)
+      .join('\n')
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = $('btn-copy-log')
+      const orig = btn.querySelector('span').textContent
+      btn.querySelector('span').textContent = '✓'
+      setTimeout(() => { btn.querySelector('span').textContent = orig }, 1500)
+    })
+  })
   $('btn-clear-log').addEventListener('click', () => {
     logClearedAt = Date.now()
     extraLogLines = []
