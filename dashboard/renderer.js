@@ -812,26 +812,31 @@ const CONFIG_SCHEMA = [
     { key: 'multi_provider',label: 'Query All Providers',           ru: 'Опросить все провайдеры', type: 'bool' },
   ]},
   { section: 'ANTHROPIC', ru: 'ANTHROPIC', fields: [
+    { key: 'anthropic_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
     { key: 'anthropic_api_key',  label: 'API Key',  ru: 'API ключ',  type: 'password' },
     { key: 'anthropic_api_host', label: 'API Host', ru: 'API хост',  type: 'text' },
     { key: 'anthropic_model',    label: 'Model',    ru: 'Модель',    type: 'model-select', loadFrom: 'anthropic' },
   ]},
   { section: 'OPENAI', ru: 'OPENAI', fields: [
+    { key: 'openai_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
     { key: 'openai_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
     { key: 'openai_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
     { key: 'openai_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'openai' },
   ]},
   { section: 'GEMINI', ru: 'GEMINI', fields: [
+    { key: 'gemini_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
     { key: 'gemini_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
     { key: 'gemini_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
     { key: 'gemini_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'gemini' },
   ]},
   { section: 'OPENROUTER', ru: 'OPENROUTER', fields: [
+    { key: 'openrouter_enabled',  label: 'Enabled',  ru: 'Включён',   type: 'bool' },
     { key: 'openrouter_api_key',  label: 'API Key',  ru: 'API ключ', type: 'password' },
     { key: 'openrouter_api_host', label: 'API Host', ru: 'API хост', type: 'text' },
     { key: 'openrouter_model',    label: 'Model',    ru: 'Модель',   type: 'model-select', loadFrom: 'openrouter' },
   ]},
   { section: 'AZURE OPENAI', ru: 'AZURE OPENAI', fields: [
+    { key: 'azure_openai_enabled',     label: 'Enabled',      ru: 'Включён',       type: 'bool' },
     { key: 'azure_openai_api_key',     label: 'API Key',      ru: 'API ключ',      type: 'password' },
     { key: 'azure_openai_endpoint',    label: 'Endpoint',     ru: 'Эндпоинт',      type: 'text' },
     { key: 'azure_openai_deployment',  label: 'Deployment',   ru: 'Деплоймент',    type: 'text' },

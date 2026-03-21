@@ -46,26 +46,31 @@ class BotConfig:
 
     # Per-provider credentials + models
     # Anthropic
+    anthropic_enabled: bool = True
     anthropic_api_key: str = ""
     anthropic_api_host: str = "https://api.anthropic.com"
     anthropic_model: str = "claude-sonnet-4-6"
 
     # OpenAI
+    openai_enabled: bool = True
     openai_api_key: str = ""
     openai_api_host: str = "https://api.openai.com"
     openai_model: str = "gpt-4o"
 
     # Google Gemini
+    gemini_enabled: bool = True
     gemini_api_key: str = ""
     gemini_api_host: str = "https://generativelanguage.googleapis.com"
     gemini_model: str = "gemini-2.0-flash"
 
     # OpenRouter
+    openrouter_enabled: bool = True
     openrouter_api_key: str = ""
     openrouter_api_host: str = "https://openrouter.ai"
     openrouter_model: str = ""
 
     # Azure OpenAI
+    azure_openai_enabled: bool = True
     azure_openai_api_key: str = ""
     azure_openai_endpoint: str = ""
     azure_openai_deployment: str = ""
@@ -161,18 +166,23 @@ class BotConfig:
             max_spread=get("max_spread", 0.04),
             ai_provider=get("ai_provider", "anthropic"),
             multi_provider=get("multi_provider", False),
+            anthropic_enabled=get("anthropic_enabled", True),
             anthropic_api_key=get("anthropic_api_key", ""),
             anthropic_api_host=get("anthropic_api_host", "https://api.anthropic.com"),
             anthropic_model=get("anthropic_model", _legacy_anthropic or "claude-sonnet-4-6"),
+            openai_enabled=get("openai_enabled", True),
             openai_api_key=get("openai_api_key", ""),
             openai_api_host=get("openai_api_host", "https://api.openai.com"),
             openai_model=get("openai_model", "gpt-4o"),
+            gemini_enabled=get("gemini_enabled", True),
             gemini_api_key=get("gemini_api_key", ""),
             gemini_api_host=get("gemini_api_host", "https://generativelanguage.googleapis.com"),
             gemini_model=get("gemini_model", "gemini-2.0-flash"),
+            openrouter_enabled=get("openrouter_enabled", True),
             openrouter_api_key=get("openrouter_api_key", ""),
             openrouter_api_host=get("openrouter_api_host", "https://openrouter.ai"),
             openrouter_model=get("openrouter_model", ""),
+            azure_openai_enabled=get("azure_openai_enabled", True),
             azure_openai_api_key=get("azure_openai_api_key", ""),
             azure_openai_endpoint=get("azure_openai_endpoint", ""),
             azure_openai_deployment=get("azure_openai_deployment", ""),

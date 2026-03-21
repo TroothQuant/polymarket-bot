@@ -132,11 +132,12 @@ public sealed class Estimator
     private List<string> GetConfiguredProviders()
     {
         var out_ = new List<string>();
-        if (!string.IsNullOrEmpty(_config.AnthropicApiKey)) out_.Add("anthropic");
-        if (!string.IsNullOrEmpty(_config.OpenAiApiKey))    out_.Add("openai");
-        if (!string.IsNullOrEmpty(_config.GeminiApiKey))    out_.Add("gemini");
-        if (!string.IsNullOrEmpty(_config.OpenRouterApiKey)) out_.Add("openrouter");
-        if (!string.IsNullOrEmpty(_config.AzureOpenAiApiKey) &&
+        if (_config.AnthropicEnabled && !string.IsNullOrEmpty(_config.AnthropicApiKey)) out_.Add("anthropic");
+        if (_config.OpenAiEnabled    && !string.IsNullOrEmpty(_config.OpenAiApiKey))    out_.Add("openai");
+        if (_config.GeminiEnabled    && !string.IsNullOrEmpty(_config.GeminiApiKey))    out_.Add("gemini");
+        if (_config.OpenRouterEnabled && !string.IsNullOrEmpty(_config.OpenRouterApiKey)) out_.Add("openrouter");
+        if (_config.AzureOpenAiEnabled &&
+            !string.IsNullOrEmpty(_config.AzureOpenAiApiKey) &&
             !string.IsNullOrEmpty(_config.AzureOpenAiEndpoint) &&
             !string.IsNullOrEmpty(_config.AzureOpenAiDeployment)) out_.Add("azure_openai");
         return out_;

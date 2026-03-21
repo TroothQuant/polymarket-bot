@@ -48,18 +48,23 @@
   "ai_provider": "anthropic",
   "ai_model": "claude-sonnet-4-6",
 
+  "anthropic_enabled": true,
   "anthropic_api_key": "sk-ant-...",
   "anthropic_api_host": "https://api.anthropic.com",
 
+  "openai_enabled": true,
   "openai_api_key": "",
   "openai_api_host": "https://api.openai.com",
 
+  "gemini_enabled": true,
   "gemini_api_key": "",
   "gemini_api_host": "https://generativelanguage.googleapis.com",
 
+  "openrouter_enabled": true,
   "openrouter_api_key": "",
   "openrouter_api_host": "https://openrouter.ai",
 
+  "azure_openai_enabled": true,
   "azure_openai_api_key": "",
   "azure_openai_endpoint": "",
   "azure_openai_deployment": "",

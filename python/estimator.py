@@ -183,18 +183,18 @@ class Estimator:
         )
 
     def _get_configured_providers(self) -> list[str]:
-        """Return providers that have API keys configured."""
+        """Return providers that have API keys configured and are enabled."""
         c = self.config
         out = []
-        if c.anthropic_api_key:
+        if c.anthropic_enabled and c.anthropic_api_key:
             out.append("anthropic")
-        if c.openai_api_key:
+        if c.openai_enabled and c.openai_api_key:
             out.append("openai")
-        if c.gemini_api_key:
+        if c.gemini_enabled and c.gemini_api_key:
             out.append("gemini")
-        if c.openrouter_api_key:
+        if c.openrouter_enabled and c.openrouter_api_key:
             out.append("openrouter")
-        if c.azure_openai_api_key and c.azure_openai_endpoint and c.azure_openai_deployment:
+        if c.azure_openai_enabled and c.azure_openai_api_key and c.azure_openai_endpoint and c.azure_openai_deployment:
             out.append("azure_openai")
         return out
 

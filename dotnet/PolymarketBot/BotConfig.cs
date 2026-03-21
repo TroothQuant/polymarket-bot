@@ -30,22 +30,27 @@ public sealed class BotConfig
 
     // Per-provider credentials + models (one place per provider, no overlap)
     // Anthropic
+    public bool AnthropicEnabled { get; init; } = true;
     public string AnthropicApiKey { get; init; } = "";
     public string AnthropicApiHost { get; init; } = "https://api.anthropic.com";
     public string AnthropicModel { get; init; } = "claude-sonnet-4-6";
     // OpenAI
+    public bool OpenAiEnabled { get; init; } = true;
     public string OpenAiApiKey { get; init; } = "";
     public string OpenAiApiHost { get; init; } = "https://api.openai.com";
     public string OpenAiModel { get; init; } = "gpt-4o";
     // Google Gemini
+    public bool GeminiEnabled { get; init; } = true;
     public string GeminiApiKey { get; init; } = "";
     public string GeminiApiHost { get; init; } = "https://generativelanguage.googleapis.com";
     public string GeminiModel { get; init; } = "gemini-2.0-flash";
     // OpenRouter
+    public bool OpenRouterEnabled { get; init; } = true;
     public string OpenRouterApiKey { get; init; } = "";
     public string OpenRouterApiHost { get; init; } = "https://openrouter.ai";
     public string OpenRouterModel { get; init; } = "";
     // Azure OpenAI
+    public bool AzureOpenAiEnabled { get; init; } = true;
     public string AzureOpenAiApiKey { get; init; } = "";
     public string AzureOpenAiEndpoint { get; init; } = "";
     public string AzureOpenAiDeployment { get; init; } = "";
@@ -145,18 +150,23 @@ public sealed class BotConfig
             MaxSpread = double.Parse(Cfg("max_spread", "MAX_SPREAD", "0.04")),
             AiProvider = Cfg("ai_provider", "AI_PROVIDER", "anthropic"),
             MultiProvider = Cfg("multi_provider", "MULTI_PROVIDER", "false").Equals("true", StringComparison.OrdinalIgnoreCase),
+            AnthropicEnabled = Cfg("anthropic_enabled", "ANTHROPIC_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             AnthropicApiKey = Cfg("anthropic_api_key", "ANTHROPIC_API_KEY", ""),
             AnthropicApiHost = Cfg("anthropic_api_host", "ANTHROPIC_API_HOST", "https://api.anthropic.com"),
             AnthropicModel = Cfg("anthropic_model", "ANTHROPIC_MODEL", legacyAnthropicModel.Length > 0 ? legacyAnthropicModel : "claude-sonnet-4-6"),
+            OpenAiEnabled = Cfg("openai_enabled", "OPENAI_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             OpenAiApiKey = Cfg("openai_api_key", "OPENAI_API_KEY", ""),
             OpenAiApiHost = Cfg("openai_api_host", "OPENAI_API_HOST", "https://api.openai.com"),
             OpenAiModel = Cfg("openai_model", "OPENAI_MODEL", "gpt-4o"),
+            GeminiEnabled = Cfg("gemini_enabled", "GEMINI_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             GeminiApiKey = Cfg("gemini_api_key", "GEMINI_API_KEY", ""),
             GeminiApiHost = Cfg("gemini_api_host", "GEMINI_API_HOST", "https://generativelanguage.googleapis.com"),
             GeminiModel = Cfg("gemini_model", "GEMINI_MODEL", "gemini-2.0-flash"),
+            OpenRouterEnabled = Cfg("openrouter_enabled", "OPENROUTER_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             OpenRouterApiKey = Cfg("openrouter_api_key", "OPENROUTER_API_KEY", ""),
             OpenRouterApiHost = Cfg("openrouter_api_host", "OPENROUTER_API_HOST", "https://openrouter.ai"),
             OpenRouterModel = Cfg("openrouter_model", "OPENROUTER_MODEL", ""),
+            AzureOpenAiEnabled = Cfg("azure_openai_enabled", "AZURE_OPENAI_ENABLED", "true").Equals("true", StringComparison.OrdinalIgnoreCase),
             AzureOpenAiApiKey = Cfg("azure_openai_api_key", "AZURE_OPENAI_API_KEY", ""),
             AzureOpenAiEndpoint = Cfg("azure_openai_endpoint", "AZURE_OPENAI_ENDPOINT", ""),
             AzureOpenAiDeployment = Cfg("azure_openai_deployment", "AZURE_OPENAI_DEPLOYMENT", ""),
