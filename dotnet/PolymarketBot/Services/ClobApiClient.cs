@@ -356,7 +356,6 @@ public sealed class ClobApiClient
         // Use Floor (not Round) so we never request more tokens than we actually hold.
         // Math.Round can round 11.076921 → 11.08, exceeding the on-chain balance by a few atomic units.
         double rawMaker = Math.Floor(shares * 100) / 100;  // floor to 2dp
-        double rawTaker = Math.Round(rawMaker * roundedPrice, 4);  // USDC we receive
 
         if (rawMaker < 5.0)
         {
@@ -365,7 +364,13 @@ public sealed class ClobApiClient
         }
 
         long makerAmount = (long)Math.Round(rawMaker * 1_000_000);
-        long takerAmount = (long)Math.Round(rawTaker * 1_000_000);
+        // Compute takerAmount via integer tick arithmetic so the ratio takerAmount/makerAmount is
+        // exactly tick-aligned. Float approach (rawMaker * roundedPrice * 1e6) introduces rounding
+        // error: e.g. 572400 / 6290000 = 0.09100159 which CLOB rejects.
+        // Integer approach: 6290000 * 91 / 1000 = 572390 → 572390/6290000 = 0.091 exactly.
+        long ticksPerUnit = (long)Math.Round(1.0 / tickSizeD);
+        long priceInTicks = (long)Math.Round(roundedPrice / tickSizeD);
+        long takerAmount = makerAmount * priceInTicks / ticksPerUnit;
 
         if (makerAmount <= 0 || takerAmount <= 0)
         {
