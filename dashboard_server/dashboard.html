@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trooth Polymarket Trading</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-elev: #161b22;
+    --bg-elev-2: #1c232e;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --fg-mute: #8b949e;
+    --fg-faint: #6e7681;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  header .meta { color: var(--fg-mute); font-size: 12px; font-family: var(--mono); }
+  header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  header button {
+    background: var(--bg-elev-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  header button:hover { background: #2a3340; }
+  header label { font-size: 12px; color: var(--fg-mute); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  header input[type=checkbox] { accent-color: var(--accent); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+  }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+
+  .col {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 80vh;
+  }
+  .col h2 {
+    margin: 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--fg-mute);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .badge {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+  }
+  .badge.green { background: var(--green); box-shadow: 0 0 8px rgba(63, 185, 80, 0.45); }
+  .badge.yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(210, 153, 34, 0.45); }
+  .badge.red { background: var(--red); box-shadow: 0 0 8px rgba(248, 81, 73, 0.45); }
+  .status-text { font-size: 11px; color: var(--fg-mute); font-family: var(--mono); }
+
+  .equity {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .equity .label { color: var(--fg-mute); font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .equity .value { font-family: var(--mono); font-size: 26px; font-weight: 600; }
+  .equity .sub { font-family: var(--mono); font-size: 12px; color: var(--fg-mute); }
+  .equity .sub .pos { color: var(--green); }
+  .equity .sub .neg { color: var(--red); }
+
+  .section-title {
+    font-size: 11px;
+    color: var(--fg-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 2px;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th { text-align: left; color: var(--fg-mute); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--bg-elev-2); }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; }
+  td.pos { color: var(--green); }
+  td.neg { color: var(--red); }
+  td.muted { color: var(--fg-mute); }
+  .empty { color: var(--fg-faint); font-style: italic; padding: 12px 4px; font-size: 12px; }
+
+  .log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    max-height: 320px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    color: var(--fg);
+  }
+  .log .line { display: block; }
+  .log .line.error { color: var(--red); }
+  .log .line.warn { color: var(--yellow); }
+  .log .line.ts { color: var(--fg-faint); }
+  .log .line.info { color: var(--fg); }
+
+  .err-card {
+    background: rgba(248, 81, 73, 0.08);
+    border: 1px solid rgba(248, 81, 73, 0.3);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: #ffcfcb;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Trooth Polymarket Trading</h1>
+  <span class="meta">last refresh <span id="last-refresh">—</span></span>
+  <div class="controls">
+    <label><input type="checkbox" id="auto" checked /> auto-refresh 30s</label>
+    <button id="refresh-btn">refresh now</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============================ WEATHER BOT ============================ -->
+  <section class="col" id="weather-col">
+    <h2><span class="badge" id="weather-badge"></span> Weather Bot <span class="status-text" id="weather-status">checking…</span></h2>
+
+    <div class="equity">
+      <span class="label">Bankroll (paper)</span>
+      <span class="value" id="weather-bankroll">—</span>
+      <span class="sub">
+        Realized P&amp;L <span id="weather-pnl">—</span> &nbsp;·&nbsp; Trades <span id="weather-trade-count">—</span> &nbsp;·&nbsp; Win rate <span id="weather-winrate">—</span>
+      </span>
+    </div>
+
+    <div>
+      <div class="section-title">Recent trades</div>
+      <div id="weather-trades"></div>
+    </div>
+
+    <div>
+      <div class="section-title">Weather signals</div>
+      <div id="weather-signals"></div>
+    </div>
+
+    <div>
+      <div class="section-title">Recent events</div>
+      <div class="log" id="weather-events"></div>
+    </div>
+  </section>
+
+
+  <!-- ============================ CLAUDE BOT ============================ -->
+  <section class="col" id="claude-col">
+    <h2><span class="badge" id="claude-badge"></span> Claude Ensemble Bot <span class="status-text" id="claude-status">checking…</span></h2>
+
+    <div class="equity">
+      <span class="label">Bankroll &amp; AI spend</span>
+      <span class="value" id="claude-bankroll">—</span>
+      <span class="sub">
+        AI spent <span id="claude-spent">—</span> &nbsp;·&nbsp; Realized P&amp;L <span id="claude-pnl">—</span> &nbsp;·&nbsp; Trades <span id="claude-trade-count">—</span>
+      </span>
+    </div>
+
+    <div>
+      <div class="section-title">Open positions</div>
+      <div id="claude-positions"></div>
+    </div>
+
+    <div>
+      <div class="section-title">Recent trades</div>
+      <div id="claude-trades"></div>
+    </div>
+
+    <div>
+      <div class="section-title">Recent log</div>
+      <div class="log" id="claude-log"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ============================== utilities ==============================
+
+const fmtUsd = (n) =>
+  (n === null || n === undefined || Number.isNaN(n))
+    ? "—"
+    : "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const fmtPct = (n) =>
+  (n === null || n === undefined || Number.isNaN(n))
+    ? "—"
+    : (Number(n) * 100).toFixed(1) + "%";
+
+const fmtNum = (n, d = 2) =>
+  (n === null || n === undefined || Number.isNaN(n))
+    ? "—"
+    : Number(n).toFixed(d);
+
+const fmtPnL = (n) => {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  const s = (n >= 0 ? "+" : "") + fmtUsd(n).replace("$-", "-$");
+  return `<span class="${n >= 0 ? 'pos' : 'neg'}">${s}</span>`;
+};
+
+const fmtTime = (ts) => {
+  if (!ts) return "—";
+  const d = (typeof ts === "number") ? new Date(ts * (ts > 1e12 ? 1 : 1000)) : new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString();
+};
+
+const escapeHtml = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+
+async function getJson(url) {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return { _error: `HTTP ${r.status}`, _status: r.status, _body: await r.text().catch(() => "") };
+    return await r.json();
+  } catch (e) {
+    return { _error: String(e), _status: 0 };
+  }
+}
+
+function tableHtml(headers, rows, emptyMsg) {
+  if (!rows || rows.length === 0) {
+    return `<div class="empty">${escapeHtml(emptyMsg)}</div>`;
+  }
+  const head = headers.map((h) => `<th>${escapeHtml(h.label)}</th>`).join("");
+  const body = rows.map((r) =>
+    "<tr>" + headers.map((h) => {
+      const v = h.get(r);
+      const cls = h.cls ? h.cls(r) : "";
+      return `<td class="${cls}">${v ?? ""}</td>`;
+    }).join("") + "</tr>"
+  ).join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function setBadge(el, state) {
+  el.classList.remove("green", "yellow", "red");
+  if (state === "green") el.classList.add("green");
+  else if (state === "yellow") el.classList.add("yellow");
+  else el.classList.add("red");
+}
+
+// ============================== Weather column ==============================
+
+async function refreshWeather() {
+  const badge = document.getElementById("weather-badge");
+  const statusEl = document.getElementById("weather-status");
+
+  const health = await getJson("/api/weather/health");
+  if (health._error) {
+    setBadge(badge, "red");
+    statusEl.textContent = `unreachable (${health._status || "no response"})`;
+    document.getElementById("weather-bankroll").textContent = "—";
+    document.getElementById("weather-pnl").textContent = "—";
+    document.getElementById("weather-trade-count").textContent = "—";
+    document.getElementById("weather-winrate").textContent = "—";
+    document.getElementById("weather-trades").innerHTML = `<div class="err-card">Weather bot unreachable on :8000</div>`;
+    document.getElementById("weather-signals").innerHTML = "";
+    document.getElementById("weather-events").innerHTML = "";
+    return;
+  }
+  setBadge(badge, "green");
+  statusEl.textContent = "ok";
+
+  const dash = await getJson("/api/weather/dashboard");
+  if (dash._error) {
+    document.getElementById("weather-bankroll").textContent = "(reachable, dashboard data unavailable)";
+    return;
+  }
+
+  const stats = dash.stats || {};
+  document.getElementById("weather-bankroll").textContent = fmtUsd(stats.bankroll);
+  document.getElementById("weather-pnl").innerHTML = fmtPnL(stats.total_pnl);
+  document.getElementById("weather-trade-count").textContent = stats.total_trades ?? "—";
+  document.getElementById("weather-winrate").textContent = fmtPct(stats.win_rate);
+
+  // Recent trades (last 10)
+  const trades = (dash.recent_trades || []).slice(0, 10);
+  document.getElementById("weather-trades").innerHTML = tableHtml(
+    [
+      { label: "Time",   get: (t) => fmtTime(t.timestamp || t.created_at) },
+      { label: "Market", get: (t) => escapeHtml((t.event_slug || t.market_ticker || t.market || "").toString().slice(0, 36)) },
+      { label: "Side",   get: (t) => escapeHtml(t.direction || t.side || "") },
+      { label: "Size",   get: (t) => fmtUsd(t.size), cls: () => "num" },
+      { label: "Price",  get: (t) => fmtNum(t.entry_price ?? t.price, 3), cls: () => "num" },
+      { label: "P&L",    get: (t) => fmtPnL(t.pnl ?? t.realized_pnl), cls: () => "num" },
+    ],
+    trades,
+    "no trades yet"
+  );
+
+  // Weather signals
+  const signals = (dash.weather_signals || []).slice(0, 8);
+  document.getElementById("weather-signals").innerHTML = tableHtml(
+    [
+      { label: "Market", get: (s) => escapeHtml(String(s.title || s.market || s.question || "").slice(0, 50)) },
+      { label: "Side",   get: (s) => escapeHtml(s.direction || s.side || "") },
+      { label: "Edge",   get: (s) => fmtPct(s.edge), cls: (s) => (Number(s.edge) || 0) > 0 ? "num pos" : "num neg" },
+      { label: "Model",  get: (s) => fmtPct(s.model_probability), cls: () => "num" },
+      { label: "Market", get: (s) => fmtPct(s.market_probability), cls: () => "num" },
+    ],
+    signals,
+    "no weather signals"
+  );
+
+  // Recent events (read-only log)
+  const events = await getJson("/api/weather/events");
+  const evContainer = document.getElementById("weather-events");
+  if (events._error || !Array.isArray(events)) {
+    evContainer.innerHTML = `<div class="empty">events unavailable</div>`;
+  } else if (events.length === 0) {
+    evContainer.innerHTML = `<div class="empty">no events yet</div>`;
+  } else {
+    evContainer.innerHTML = events.slice(-20).map((e) => {
+      const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
+      const type = (e.type || "info").toLowerCase();
+      const cls = (type === "error") ? "error" : (type === "warning") ? "warn" : "info";
+      return `<span class="line ${cls}"><span class="ts">${escapeHtml(t)}</span>  [${escapeHtml(type)}] ${escapeHtml(e.message || "")}</span>`;
+    }).join("");
+    evContainer.scrollTop = evContainer.scrollHeight;
+  }
+}
+
+// ============================== Claude column ==============================
+
+async function refreshClaude() {
+  const badge = document.getElementById("claude-badge");
+  const statusEl = document.getElementById("claude-status");
+
+  const status = await getJson("/api/claude/status");
+  const pf = await getJson("/api/claude/portfolio");
+
+  if (status._error || status.state === "missing") {
+    setBadge(badge, "red");
+    statusEl.textContent = status.state === "missing" ? "no portfolio file" : (status._error || "error");
+  } else if (status.state === "stale") {
+    setBadge(badge, "yellow");
+    statusEl.textContent = `stale (mtime ${Math.round(status.age_seconds / 60)}m ago)`;
+  } else {
+    setBadge(badge, "green");
+    statusEl.textContent = `running (mtime ${Math.round(status.age_seconds)}s ago)`;
+  }
+
+  const initial = pf.initial_bankroll;
+  const bank = pf.bankroll;
+  const spent = (initial !== null && initial !== undefined && bank !== null && bank !== undefined)
+    ? Math.max(0, Number(initial) - Number(bank))
+    : null;
+
+  document.getElementById("claude-bankroll").textContent = fmtUsd(bank);
+  document.getElementById("claude-spent").textContent = (spent !== null) ? fmtUsd(spent) : "—";
+  document.getElementById("claude-pnl").innerHTML = fmtPnL(pf.total_realized_pnl);
+  document.getElementById("claude-trade-count").textContent = pf.total_trades ?? "—";
+
+  // Open positions
+  const positions = pf.positions || [];
+  document.getElementById("claude-positions").innerHTML = tableHtml(
+    [
+      { label: "Question", get: (p) => escapeHtml(String(p.question || "").slice(0, 50)) },
+      { label: "Side",     get: (p) => escapeHtml(p.side || "") },
+      { label: "Shares",   get: (p) => fmtNum(p.shares, 1), cls: () => "num" },
+      { label: "Entry",    get: (p) => fmtNum(p.entry_price, 3), cls: () => "num" },
+      { label: "Current",  get: (p) => fmtNum(p.current_price, 3), cls: () => "num" },
+      { label: "Unrealised", get: (p) => fmtPnL(p.unrealized_pnl), cls: () => "num" },
+    ],
+    positions,
+    "no open positions"
+  );
+
+  // Recent trades
+  const trades = await getJson("/api/claude/trades?limit=10");
+  document.getElementById("claude-trades").innerHTML = tableHtml(
+    [
+      { label: "Time",   get: (t) => fmtTime(t.timestamp) },
+      { label: "Action", get: (t) => escapeHtml(t.action || "") },
+      { label: "Side",   get: (t) => escapeHtml(t.side || "") },
+      { label: "Market", get: (t) => escapeHtml(String(t.question || "").slice(0, 35)) },
+      { label: "Size",   get: (t) => fmtUsd(t.size_usd), cls: () => "num" },
+      { label: "Price",  get: (t) => fmtNum(t.price, 3), cls: () => "num" },
+    ],
+    Array.isArray(trades) ? trades : [],
+    "no trades yet"
+  );
+
+  // Recent log
+  const log = await getJson("/api/claude/log?lines=30");
+  const logEl = document.getElementById("claude-log");
+  if (!Array.isArray(log) || log.length === 0) {
+    logEl.innerHTML = `<div class="empty">no log lines yet</div>`;
+  } else {
+    logEl.innerHTML = log.map((e) => {
+      const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
+      const lvl = (e.level || "").toUpperCase();
+      const cls = (lvl === "ERROR" || lvl === "CRITICAL") ? "error" : (lvl === "WARNING") ? "warn" : "info";
+      const msg = e.message ?? e.raw ?? "";
+      return `<span class="line ${cls}"><span class="ts">${escapeHtml(t)}</span>  ${escapeHtml(lvl.padEnd(5))} ${escapeHtml(String(msg).slice(0, 240))}</span>`;
+    }).join("");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+}
+
+// ============================== refresh loop ==============================
+
+let timer = null;
+
+async function refreshAll() {
+  document.getElementById("last-refresh").textContent = new Date().toLocaleTimeString();
+  await Promise.allSettled([refreshWeather(), refreshClaude()]);
+}
+
+function startTimer() {
+  stopTimer();
+  timer = setInterval(refreshAll, 30000);
+}
+function stopTimer() {
+  if (timer) { clearInterval(timer); timer = null; }
+}
+
+document.getElementById("refresh-btn").addEventListener("click", refreshAll);
+document.getElementById("auto").addEventListener("change", (e) => {
+  if (e.target.checked) startTimer();
+  else stopTimer();
+});
+
+refreshAll();
+startTimer();
+</script>
+</body>
+</html>
