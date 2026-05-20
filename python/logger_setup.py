@@ -61,3 +61,23 @@ def setup_logging(data_dir: str, verbose: bool = False) -> None:
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(JsonFormatter())
     root.addHandler(file_handler)
+
+    # Quiet noisy third-party HTTP plumbing loggers (2026-05-20).
+    # The Anthropic SDK + httpcore emit ~10 DEBUG lines per API call covering
+    # every step of the HTTP request/response lifecycle (request_headers,
+    # request_body, response_headers, response_body, response_closed). With
+    # 15-20 markets evaluated per cycle that's hundreds of DEBUG lines per
+    # cycle drowning out the actual trading events on the dashboard. Raising
+    # these to INFO keeps the one useful line per call ("HTTP Request: POST
+    # https://api.anthropic.com/v1/messages 200 OK") and drops the rest.
+    # Stays at DEBUG when the operator passes `--verbose`.
+    if not verbose:
+        for noisy_logger in (
+            "httpcore",
+            "httpcore.http11",
+            "httpcore.connection",
+            "anthropic._base_client",
+            "openai._base_client",
+            "urllib3.connectionpool",
+        ):
+            logging.getLogger(noisy_logger).setLevel(logging.INFO)

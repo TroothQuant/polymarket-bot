@@ -67,13 +67,42 @@ class Estimator:
         else:
             self._anthropic_client = None
 
+        # Audit 2026-05-19 HIGH #25: token counters that survive a None-return
+        # from estimate(). Even when the ensemble can't produce a usable
+        # estimate (parse failure, low confidence, no responses), real
+        # provider calls may have spent tokens. main.py drains these via
+        # consume_last_tokens() and records the spend regardless of outcome.
+        self._last_tokens_in = 0
+        self._last_tokens_out = 0
+
+    def consume_last_tokens(self) -> tuple[int, int]:
+        """Return (input_tokens, output_tokens) spent during the most recent
+        estimate() call and reset the counters. Safe to call even when
+        estimate() returned None.
+        """
+        i, o = self._last_tokens_in, self._last_tokens_out
+        self._last_tokens_in = 0
+        self._last_tokens_out = 0
+        return i, o
+
     # ── Public API ─────────────────────────────────────────────────────────
 
     def estimate(self, market: MarketInfo) -> Optional[Estimate]:
         """Run estimation. Uses multi-provider mode if configured."""
+        # Reset per-call token counters (HIGH #25). Each *_single_call
+        # accumulates into these via _account_tokens(); consume_last_tokens()
+        # surfaces them to the caller after estimate() returns.
+        self._last_tokens_in = 0
+        self._last_tokens_out = 0
         if self.config.multi_provider:
             return self._estimate_multi(market)
         return self._estimate_single(market)
+
+    def _account_tokens(self, in_tok: int, out_tok: int) -> None:
+        """Record token spend for the current estimate() call. Called from
+        every _single_call so even failed-parse calls land in the counters."""
+        self._last_tokens_in += int(in_tok or 0)
+        self._last_tokens_out += int(out_tok or 0)
 
     # ── Single-provider estimation ─────────────────────────────────────────
 
@@ -318,6 +347,9 @@ class Estimator:
             text = text_block.text.strip()  # type: ignore[union-attr]
             in_tok = response.usage.input_tokens
             out_tok = response.usage.output_tokens
+            # Audit 2026-05-19 HIGH #25: account tokens BEFORE the parse so a
+            # bad JSON response still records the cost the provider billed.
+            self._account_tokens(in_tok, out_tok)
             result = self._parse_json_response(text)
             if result is None:
                 return None
@@ -377,6 +409,9 @@ class Estimator:
             usage = data.get("usage", {})
             in_tok = usage.get("prompt_tokens", 0)
             out_tok = usage.get("completion_tokens", 0)
+            # Audit 2026-05-19 HIGH #25: account tokens BEFORE the parse so a
+            # bad JSON response still records the cost the provider billed.
+            self._account_tokens(in_tok, out_tok)
             result = self._parse_json_response(text)
             if result is None:
                 return None
@@ -415,6 +450,9 @@ class Estimator:
             usage = data.get("usageMetadata", {})
             in_tok = usage.get("promptTokenCount", 0)
             out_tok = usage.get("candidatesTokenCount", 0)
+            # Audit 2026-05-19 HIGH #25: account tokens BEFORE the parse so a
+            # bad JSON response still records the cost the provider billed.
+            self._account_tokens(in_tok, out_tok)
             result = self._parse_json_response(text)
             if result is None:
                 return None
@@ -508,8 +546,29 @@ class Estimator:
                 return True
 
         except Exception as e:
+            # Audit 2026-05-19 HIGH #23: the previous broad `return True`
+            # treated EVERY non-auth exception as valid -- including code
+            # bugs (ValueError, KeyError, TypeError) in this validator
+            # itself. That silently passed misconfigured providers through
+            # startup, only to fail every real estimation call later.
+            #
+            # Treat ONLY genuine network/timeout errors as "still valid"
+            # (auth-level info isn't available offline). Everything else
+            # fails validation so the bug surfaces immediately.
             if _anthropic is not None and isinstance(e, _anthropic.AuthenticationError):
                 return False
-            return True  # Network errors don't mean the key is bad
+            if isinstance(e, (requests.exceptions.ConnectionError,
+                              requests.exceptions.Timeout,
+                              requests.exceptions.ReadTimeout)):
+                log.warning(
+                    f"Provider '{provider}' validation: transient network "
+                    f"error ({type(e).__name__}); assuming valid."
+                )
+                return True
+            log.exception(
+                f"Provider '{provider}' validation raised unexpected {type(e).__name__}; "
+                f"failing validation. Investigate before relying on this provider."
+            )
+            return False
 
         return True

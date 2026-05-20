@@ -9,7 +9,9 @@ Usage:
 
 import argparse
 import logging
+import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -24,9 +26,50 @@ from models import Trade, TradeAction
 from notifier import Notifier
 from portfolio import Portfolio
 from trader import PaperTrader, LiveTrader
-from persistence import load_snapshot, save_snapshot, append_trade
+from persistence import load_snapshot, save_snapshot, append_trade, append_pnl_snapshot
 
 log = logging.getLogger("bot.main")
+
+# Audit 2026-05-19 CRITICAL #1, hardened on 2026-05-20 after a fresh zombie
+# (PID 74431) was discovered: refuse to launch if another bot copy is alive.
+# Closes the race-condition loop at the source rather than relying solely on
+# the operator-script `_process_guard` checks.
+_SELF_SIGNATURE = r"main\.py.*--console"
+
+
+def _refuse_if_another_bot_alive() -> None:
+    """Exit if another copy of this bot is already running.
+
+    Matches against `pgrep -f` on the standard run_paper.sh invocation
+    (`python main.py --console`). Returns silently when this process is
+    the only match. Skipped if pgrep is unavailable (Windows, restricted
+    sandboxes); the operator-script guards remain as fallback in that case.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", _SELF_SIGNATURE],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+    own = str(os.getpid())
+    others = [p for p in result.stdout.split() if p.strip() and p.strip() != own]
+    if not others:
+        return
+
+    print("=" * 70, file=sys.stderr)
+    print("REFUSED — another Claude bot instance is already running.", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print(f"Found PID(s): {', '.join(others)}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Stop the running copy first, then re-launch.", file=sys.stderr)
+    print(f"  kill {' '.join(others)}", file=sys.stderr)
+    print("Verify:", file=sys.stderr)
+    print(f"  pgrep -f '{_SELF_SIGNATURE}' || echo '(no bot running)'", file=sys.stderr)
+    sys.exit(2)
 
 # ANSI color codes for console output
 GREEN = "\033[1;32m"
@@ -46,7 +89,43 @@ def ts():
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _hours_to_resolution(end_date_str: str) -> float:
+    """Parse a MarketInfo.end_date ISO string and return hours until resolution.
+    Returns float('inf') if the date can't be parsed (we don't filter unknowns)."""
+    if not end_date_str:
+        return float("inf")
+    try:
+        end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return (end_dt - now).total_seconds() / 3600.0
+    except (ValueError, TypeError):
+        return float("inf")
+
+
+def _filter_by_max_time_to_resolution(markets: list, max_hours: float) -> list:
+    """Drop markets resolving more than max_hours from now. Keeps unknowns."""
+    return [m for m in markets if _hours_to_resolution(m.end_date) <= max_hours]
+
+
+def _rank_short_resolution_first(markets: list) -> list:
+    """Rerank markets by `volume_24hr / sqrt(hours_to_resolution + 24)` so the
+    scanner prefers high-activity markets that resolve soon. Capital recycles
+    faster at small bankroll without abandoning activity as a quality signal.
+    """
+    import math
+    def score(m) -> float:
+        h = _hours_to_resolution(m.end_date)
+        if h == float("inf"):
+            return float(m.volume_24hr) / 100.0  # mild down-weight for unknown dates
+        return float(m.volume_24hr) / math.sqrt(h + 24.0)
+    return sorted(markets, key=score, reverse=True)
+
+
 def main():
+    # First and foremost: refuse to launch a second copy. See
+    # _refuse_if_another_bot_alive() for rationale.
+    _refuse_if_another_bot_alive()
+
     parser = argparse.ArgumentParser(description="Polymarket trading bot")
     parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
     parser.add_argument("--console", "-c", action="store_true", help="Human-readable CLI prints for each step")
@@ -56,6 +135,13 @@ def main():
     parser.add_argument("--daily-stop-loss-pct", type=float, help="Halt if daily loss exceeds this %% (e.g. 0.20)")
     parser.add_argument("--max-drawdown-pct", type=float, help="Halt if drawdown exceeds this %% (e.g. 0.50)")
     parser.add_argument("--max-concurrent-positions", type=int, help="Max open positions (e.g. 20)")
+    parser.add_argument(
+        "--clear-halt",
+        action="store_true",
+        help="Explicitly clear an is_halted flag in saved state. "
+             "Required to resume after a daily-stop or max-drawdown halt -- "
+             "the bot will NOT auto-clear these on startup (audit CRITICAL #5).",
+    )
     args = parser.parse_args()
 
     config = BotConfig.from_env()
@@ -109,10 +195,37 @@ def main():
     snapshot = load_snapshot(config.data_dir)
     portfolio = Portfolio(config, snapshot)
     if snapshot:
-        # Clear a stale IsHalted flag if portfolio value is still healthy.
-        if portfolio.is_halted and portfolio.bankroll + portfolio.total_exposure() >= 1.0:
-            portfolio.is_halted = False
-            log.info(f"Cleared stale is_halted flag (portfolio value ${portfolio.bankroll + portfolio.total_exposure():.2f} is healthy)")
+        # Audit 2026-05-19 CRITICAL #5: do NOT auto-clear is_halted on startup.
+        # The flag is set by three different halts (daily stop-loss, max
+        # drawdown, depletion) and a blind clear silently re-arms the bot
+        # before the safety condition has been re-evaluated. The operator
+        # must pass --clear-halt explicitly; the bot will not lift the flag
+        # on its own.
+        if portfolio.is_halted:
+            portfolio_value = portfolio.bankroll + portfolio.total_exposure()
+            if args.clear_halt:
+                portfolio.is_halted = False
+                log.warning(
+                    f"is_halted CLEARED by --clear-halt at operator request "
+                    f"(portfolio value ${portfolio_value:.2f}). "
+                    f"Make sure the original halt cause is no longer applicable."
+                )
+                if con:
+                    print(f"[{ts()}] --clear-halt: lifting halt at ${portfolio_value:.2f} portfolio value")
+            else:
+                log.error(
+                    f"Refusing to start: portfolio is_halted=True "
+                    f"(value ${portfolio_value:.2f}). Investigate the cause "
+                    f"(daily stop, drawdown, or depletion), then re-launch "
+                    f"with --clear-halt to override."
+                )
+                if con:
+                    print(
+                        f"[{ts()}] HALT: refusing to start. "
+                        f"Use `python main.py --console --clear-halt` to override "
+                        f"after confirming the halt cause has resolved."
+                    )
+                sys.exit(3)
         log.info(f"Resumed from saved state: ${portfolio.bankroll:.2f} bankroll, {len(portfolio.positions)} positions")
         if con:
             print(f"[{ts()}] RESUME: ${portfolio.bankroll:.2f} bankroll, {len(portfolio.positions)} positions, ${portfolio.total_exposure():.2f} exposure")
@@ -194,9 +307,16 @@ def main():
         if today != last_daily_reset:
             portfolio.reset_daily()
             last_daily_reset = today
-            log.info(f"New day — daily start value reset to ${portfolio.bankroll:.2f}")
+            log.info(
+                f"New day — daily start value reset to "
+                f"${portfolio.daily_start_value:.2f} "
+                f"(cash ${portfolio.bankroll:.2f} + exposure ${portfolio.total_exposure():.2f})"
+            )
             if con:
-                print(f"[{ts()}] NEW DAY: daily PnL reset, start=${portfolio.bankroll:.2f}")
+                print(
+                    f"[{ts()}] NEW DAY: daily PnL reset, "
+                    f"start=${portfolio.daily_start_value:.2f}"
+                )
             notifier.notify_daily_reset(portfolio)
 
         log.info(f"--- Cycle {cycle} ---")
@@ -450,6 +570,34 @@ def main():
                 if con:
                     print(f"[{ts()}] SCAN: fetching markets...")
                 markets = scanner.scan()
+
+                # Phase-aware time-to-resolution filter + short-resolution rerank
+                # (added 2026-05-19). At small bankroll, the bot can't afford to
+                # lock capital in 200-day positions. Cap entries at the same window
+                # the phased-exit timeout would close them at anyway.
+                portfolio_value = portfolio.bankroll + portfolio.total_exposure()
+                if portfolio_value < config.phase1_threshold:
+                    max_hours_cap = config.max_time_to_resolution_hours_phase1
+                    prefer_short = True
+                elif portfolio_value < config.phase2_threshold:
+                    max_hours_cap = config.max_time_to_resolution_hours_phase2
+                    prefer_short = True
+                else:
+                    max_hours_cap = 0.0
+                    prefer_short = False
+
+                pre_filter_count = len(markets)
+                if max_hours_cap and max_hours_cap > 0:
+                    markets = _filter_by_max_time_to_resolution(markets, max_hours_cap)
+                if prefer_short:
+                    markets = _rank_short_resolution_first(markets)
+                dropped_by_time = pre_filter_count - len(markets)
+                if dropped_by_time:
+                    log.info(
+                        f"Phase filter: dropped {dropped_by_time} markets resolving > "
+                        f"{max_hours_cap/24:.0f} days out (portfolio_value=${portfolio_value:.0f})"
+                    )
+
                 eligible = markets[:config.markets_per_cycle]
 
                 if con:
@@ -520,13 +668,26 @@ def main():
                     print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
                 estimate = estimator.estimate(market)
                 if estimate is None:
-                    log.info(f"  [{i}/{len(eligible)}] SKIP (estimation failed)")
+                    # Audit 2026-05-19 HIGH #25: even a failed estimation
+                    # may have spent tokens (multi-provider mode in
+                    # particular). Drain whatever the estimator accumulated
+                    # and bill the bankroll so the API budget guard reflects
+                    # the true spend.
+                    fail_in, fail_out = estimator.consume_last_tokens()
+                    if fail_in or fail_out:
+                        portfolio.record_api_cost(fail_in, fail_out)
+                    log.info(
+                        f"  [{i}/{len(eligible)}] SKIP (estimation failed; "
+                        f"recorded {fail_in} in / {fail_out} out tokens)"
+                    )
                     if con:
                         print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
                     continue
 
-                # Agent pays for its own inference
+                # Agent pays for its own inference (also drain counters so
+                # subsequent failed estimates don't double-bill).
                 portfolio.record_api_cost(estimate.input_tokens_used, estimate.output_tokens_used)
+                estimator.consume_last_tokens()
 
                 # Only halt if total portfolio value is truly depleted
                 if portfolio.bankroll + portfolio.total_exposure() < 1.0:
@@ -619,6 +780,22 @@ def main():
                 print(f"  Positions: {len(portfolio.positions)} | API cost: ${portfolio.total_api_cost:.4f} | PnL: ${portfolio.total_realized_pnl:+.2f}")
 
             save_snapshot(portfolio.snapshot(), config.data_dir)
+
+            # Append a P&L snapshot for dashboard charting. Cheap; safe if it fails.
+            try:
+                append_pnl_snapshot(
+                    data_dir=config.data_dir,
+                    bankroll=portfolio.bankroll,
+                    exposure=portfolio.total_exposure(),
+                    realized_pnl=portfolio.total_realized_pnl,
+                    unrealized_pnl=sum(p.unrealized_pnl for p in portfolio.positions),
+                    position_count=len(portfolio.positions),
+                    total_trades=portfolio.total_trades,
+                    api_cost_usd=portfolio.total_api_cost,
+                    is_halted=portfolio.is_halted,
+                )
+            except Exception as e:
+                log.warning(f"Failed to append P&L snapshot: {e}")
 
         except Exception as e:
             log.error(f"Cycle {cycle} error: {e}", exc_info=True)

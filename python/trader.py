@@ -34,6 +34,7 @@ class PaperTrader:
             unrealized_pnl=0.0,
             category=market.category,
             fair_estimate_at_entry=signal.estimate.fair_probability,
+            end_date=getattr(market, "end_date", "") or "",
         )
         portfolio.open_position(position)
 
@@ -215,6 +216,7 @@ class LiveTrader:
             category=market.category,
             order_id=order_id,
             fair_estimate_at_entry=signal.estimate.fair_probability,
+            end_date=getattr(market, "end_date", "") or "",
         )
         portfolio.open_position(position)
 

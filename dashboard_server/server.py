@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from collections import deque
 from pathlib import Path
@@ -34,7 +35,25 @@ DATA_DIR = REPO_ROOT / "data"
 PORTFOLIO_PATH = DATA_DIR / "portfolio.json"
 TRADES_PATH = DATA_DIR / "trades.jsonl"
 LOG_PATH = DATA_DIR / "bot.log"
+SNAPSHOTS_DB_PATH = DATA_DIR / "snapshots.db"
 DASHBOARD_HTML = HERE / "dashboard.html"
+
+
+def _since_to_secs(since: str) -> int:
+    """Parse '24h' / '7d' / 'all' into a lookback-seconds value."""
+    s = (since or "24h").lower().strip()
+    if s == "all":
+        return 10 ** 12  # 30k years; effectively all-time
+    if s.endswith("h"):
+        return int(s[:-1]) * 3600
+    if s.endswith("d"):
+        return int(s[:-1]) * 86400
+    if s.endswith("m"):
+        return int(s[:-1]) * 60
+    try:
+        return int(s)
+    except ValueError:
+        return 24 * 3600
 
 WEATHER_BASE_URL = os.environ.get("WEATHER_BOT_URL", "http://localhost:8000")
 CLAUDE_LIVENESS_WINDOW_SEC = 20 * 60  # 20 min for "running" status
@@ -101,25 +120,67 @@ def claude_portfolio() -> JSONResponse:
 
 @app.get("/api/claude/trades")
 def claude_trades(limit: int = 50) -> JSONResponse:
-    """Return up to `limit` most-recent JSONL trade entries (newest first)."""
+    """Return up to `limit` most-recent JSONL trade entries (newest first).
+
+    Each SELL row is enriched with a computed `pnl` (= (sell_price -
+    buy_price) * shares from the most-recent matching BUY by condition_id).
+    BUY rows have `pnl=None`. Lets the dashboard render a "Result" column
+    that mirrors the weather bot's Trade.result + pnl pair.
+    """
     limit = max(1, min(limit, 1000))
     if not TRADES_PATH.exists():
         return JSONResponse([])
-    rows: List[Dict[str, Any]] = []
+    all_rows: List[Dict[str, Any]] = []
     try:
         with open(TRADES_PATH, encoding="utf-8", errors="replace") as f:
-            for line in deque(f, maxlen=limit):
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
+                    all_rows.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
     except OSError:
         return JSONResponse([])
-    rows.reverse()  # newest first
-    return JSONResponse(rows)
+
+    # Build condition_id → most-recent BUY price, walking chronologically.
+    # Each new BUY replaces the prior one (e.g. wash-trade re-entries).
+    buy_by_cid: Dict[str, Dict[str, Any]] = {}
+    for r in all_rows:
+        if (r.get("action") or "").upper() == "BUY" and r.get("condition_id"):
+            buy_by_cid[r["condition_id"]] = r
+
+    enriched: List[Dict[str, Any]] = []
+    # Walk again, attaching pnl to each SELL based on the BUY that preceded it
+    # in time. Rebuild buy_by_cid incrementally so an earlier SELL doesn't see
+    # a later BUY's price.
+    running_buys: Dict[str, Dict[str, Any]] = {}
+    for r in all_rows:
+        out = dict(r)
+        action = (r.get("action") or "").upper()
+        cid = r.get("condition_id", "")
+        if action == "BUY":
+            running_buys[cid] = r
+            out["pnl"] = None
+        elif action == "SELL":
+            buy = running_buys.get(cid)
+            if buy:
+                try:
+                    pnl = (float(r.get("price", 0)) - float(buy.get("price", 0))) * float(r.get("shares", 0))
+                    out["pnl"] = round(pnl, 2)
+                except (TypeError, ValueError):
+                    out["pnl"] = None
+            else:
+                out["pnl"] = None
+        else:
+            out["pnl"] = None
+        enriched.append(out)
+
+    # Return the most-recent `limit` rows, newest first.
+    enriched = enriched[-limit:]
+    enriched.reverse()
+    return JSONResponse(enriched)
 
 
 @app.get("/api/claude/log")
@@ -160,6 +221,101 @@ def claude_status() -> JSONResponse:
         "last_updated": mtime,
         "age_seconds": age,
     })
+
+
+# -------------------- /api/claude/snapshots        --------------------
+
+@app.get("/api/claude/snapshots")
+def claude_snapshots(since: str = "24h") -> JSONResponse:
+    """Time series of P&L snapshots written by the bot's main loop.
+
+    Query param `since`: 24h, 7d, all (default 24h).
+    """
+    if not SNAPSHOTS_DB_PATH.exists():
+        return JSONResponse({"snapshots": [], "_source": "missing"})
+    cutoff = int(time.time()) - _since_to_secs(since)
+    try:
+        conn = sqlite3.connect(SNAPSHOTS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = list(conn.execute(
+            """SELECT ts, bankroll, exposure, realized_pnl, unrealized_pnl,
+                      position_count, total_trades, api_cost_usd, is_halted
+               FROM pnl_snapshots WHERE ts >= ? ORDER BY ts""",
+            (cutoff,),
+        ))
+        conn.close()
+    except sqlite3.Error as e:
+        return JSONResponse({"snapshots": [], "error": str(e)}, status_code=500)
+    return JSONResponse({"snapshots": [dict(r) for r in rows], "since": since, "cutoff_ts": cutoff})
+
+
+# -------------------- /api/claude/positions-detail --------------------
+
+@app.get("/api/claude/positions-detail")
+def claude_positions_detail() -> JSONResponse:
+    """Enriched open positions: portfolio.json + edge_at_entry from trades.jsonl +
+    computed hold duration. end_date is already on the position if the new bot wrote it,
+    or on legacy positions after the backfill script."""
+    data = _read_json(PORTFOLIO_PATH)
+    if data is None:
+        return JSONResponse({"positions": []})
+
+    # Index BUY entries from trades.jsonl by condition_id (most-recent first)
+    edge_by_cid: Dict[str, Dict[str, Any]] = {}
+    if TRADES_PATH.exists():
+        try:
+            with open(TRADES_PATH, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        t = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (t.get("action") or "").upper() == "BUY":
+                        cid = t.get("condition_id")
+                        if cid:
+                            # later writes overwrite earlier — we'll have the most recent BUY's metadata
+                            edge_by_cid[cid] = {
+                                "edge_at_entry": t.get("edge_at_entry", 0.0),
+                                "kelly_at_entry": t.get("kelly_at_entry", 0.0),
+                                "rationale": t.get("rationale", ""),
+                            }
+        except OSError:
+            pass
+
+    now = time.time()
+    enriched = []
+    for pos in data.get("positions", []):
+        cid = pos.get("condition_id", "")
+        meta = edge_by_cid.get(cid, {})
+        opened_at = float(pos.get("opened_at") or now)
+        hold_seconds = max(0, int(now - opened_at))
+
+        end_date = pos.get("end_date", "") or ""
+        time_to_resolution_s: Optional[int] = None
+        if end_date:
+            try:
+                # ISO 8601; tolerate trailing Z
+                from datetime import datetime
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                time_to_resolution_s = int(end_dt.timestamp() - now)
+            except (ValueError, TypeError):
+                time_to_resolution_s = None
+
+        # P&L %
+        entry = float(pos.get("entry_price") or 0)
+        curr = float(pos.get("current_price") or 0)
+        pnl_pct = ((curr - entry) / entry) if entry > 0 else 0.0
+
+        enriched.append({
+            **pos,
+            "hold_seconds": hold_seconds,
+            "time_to_resolution_s": time_to_resolution_s,
+            "pnl_pct": pnl_pct,
+            "edge_at_entry": meta.get("edge_at_entry", 0.0),
+            "kelly_at_entry": meta.get("kelly_at_entry", 0.0),
+            "rationale": meta.get("rationale", ""),
+        })
+    return JSONResponse({"positions": enriched, "last_updated": data.get("last_updated")})
 
 
 # -------------------- /api/weather/{path}          --------------------

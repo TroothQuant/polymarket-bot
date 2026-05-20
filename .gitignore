@@ -2,6 +2,7 @@
 data/
 python/data/
 dotnet/PolymarketBot/data/
+data.bak_*/
 
 # Python
 __pycache__/

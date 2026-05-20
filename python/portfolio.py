@@ -26,6 +26,9 @@ class Portfolio:
             self.total_realized_pnl = snapshot.total_realized_pnl
             self.total_trades = snapshot.total_trades
             self.is_halted = snapshot.is_halted
+            # Audit 2026-05-19 HIGH #20: restore persistent risk-control state.
+            self._recently_closed = dict(getattr(snapshot, "recently_closed", {}) or {})
+            self.total_api_cost = float(getattr(snapshot, "total_api_cost", 0.0) or 0.0)
         else:
             self.bankroll = config.initial_bankroll
             self.initial_bankroll = config.initial_bankroll
@@ -35,9 +38,8 @@ class Portfolio:
             self.total_realized_pnl = 0.0
             self.total_trades = 0
             self.is_halted = False
-
-        self._recently_closed: dict[str, float] = {}  # condition_id -> unix timestamp of close
-        self.total_api_cost = 0.0
+            self._recently_closed: dict[str, float] = {}
+            self.total_api_cost = 0.0
 
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -49,6 +51,9 @@ class Portfolio:
             total_realized_pnl=self.total_realized_pnl,
             total_trades=self.total_trades,
             is_halted=self.is_halted,
+            # Audit 2026-05-19 HIGH #20: persist risk-control state.
+            recently_closed=dict(self._recently_closed),
+            total_api_cost=self.total_api_cost,
         )
 
     def total_exposure(self) -> float:
@@ -81,6 +86,22 @@ class Portfolio:
             return None
 
         if market_price <= 0 or market_price >= 1:
+            return None
+
+        # Audit 2026-05-19 CRITICAL #6: the scanner accepts a market if EITHER
+        # side is in the tradeable band [min_market_price, 1 - min_market_price].
+        # The previously-chosen side here may still fall outside the band when
+        # the OTHER side is the in-band one. Re-check on the actual side we'd
+        # buy. Without this, a market with (yes=0.92, no=0.08) passes the
+        # scanner on YES, then NO is evaluated against 0.08 and a high
+        # reported edge sizes the bot into a near-certain-loser at 8 cents.
+        min_p = getattr(self.config, "min_market_price", 0.10)
+        max_p = 1.0 - min_p
+        if market_price < min_p or market_price > max_p:
+            log.debug(
+                f"Skipping {side.value} @ {market_price:.3f}: outside tradeable "
+                f"band [{min_p:.2f}, {max_p:.2f}]"
+            )
             return None
 
         # Kelly criterion: f* = (b*p - q) / b
@@ -239,9 +260,39 @@ class Portfolio:
                 pos.current_price = prices[pos.token_id]
                 pos.unrealized_pnl = pos.shares * (pos.current_price - pos.entry_price)
 
+    def _phased_exit_params(self) -> tuple:
+        """Determine the active phase from current portfolio value.
+
+        Returns (phase_label, take_profit_pct_or_None, max_hold_days_or_None).
+
+        Bankroll-aware exits: at small portfolios, capital efficiency dominates
+        (cycle hard, take small wins, build the bankroll). At large portfolios,
+        hold-to-resolution wins — per the whale research, 93% of top-whale trades
+        are pure holds, and the biggest lifetime P&L wallets all have <13% SELL rate.
+        """
+        if not self.config.enable_phased_exits:
+            return ("disabled", None, None)
+        portfolio_value = self.bankroll + self.total_exposure()
+        if portfolio_value < self.config.phase1_threshold:
+            return ("P1", self.config.phase1_take_profit_pct, self.config.phase1_max_hold_days)
+        if portfolio_value < self.config.phase2_threshold:
+            return ("P2", self.config.phase2_take_profit_pct, self.config.phase2_max_hold_days)
+        return ("P3", None, None)
+
     def generate_exit_signals(self) -> list[ExitSignal]:
-        """Tier 1: free rule-based exit checks on all positions."""
+        """Tier 1: free rule-based exit checks on all positions.
+
+        Exit triggers, in order of priority:
+          1. stop_loss              — pnl_pct < -position_stop_loss_pct (default -20%)
+          2. take_profit            — current_price >= take_profit_price (default 0.95)
+          3. edge_gone              — market moved past our fair-value estimate
+          4. phased_take_profit_*   — pnl_pct >= phase take-profit (P1/P2 only)
+          5. max_hold_timeout_*     — hold age >= phase max-hold-days (P1/P2 only)
+        """
         signals = []
+        phase, phase_tp_pct, phase_max_hold = self._phased_exit_params()
+        now = time.time()
+
         for pos in self.positions:
             # Skip unsellable positions: penny prices or below CLOB minimum (5 tokens)
             if pos.current_price < 0.01:
@@ -270,6 +321,18 @@ class Portfolio:
                 fair_for_side = pos.fair_estimate_at_entry if pos.side == Side.YES else (1.0 - pos.fair_estimate_at_entry)
                 if pos.current_price > fair_for_side + self.config.exit_edge_buffer:
                     signals.append(ExitSignal(pos, "edge_gone", pos.current_price, pnl, pnl_pct))
+                    continue
+
+            # Phased take-profit: capture quick gains in P1/P2, ride to resolution in P3
+            if phase_tp_pct is not None and pnl_pct >= phase_tp_pct:
+                signals.append(ExitSignal(pos, f"phased_take_profit_{phase}", pos.current_price, pnl, pnl_pct))
+                continue
+
+            # Phased max-hold: force-close stale positions in P1/P2 to free capital
+            if phase_max_hold is not None and pos.opened_at:
+                hold_days = (now - pos.opened_at) / 86400.0
+                if hold_days >= phase_max_hold:
+                    signals.append(ExitSignal(pos, f"max_hold_timeout_{phase}", pos.current_price, pnl, pnl_pct))
                     continue
 
         return signals
@@ -366,16 +429,47 @@ class Portfolio:
                 f"Balance sync (downward): ${prev:.2f} -> ${self.bankroll:.2f} "
                 f"(${diff:.2f}, {len(self.positions)} positions open)"
             )
-        self.high_water_mark = max(self.high_water_mark, self.bankroll + self.total_exposure())
+        # Audit 2026-05-19 HIGH #22: use mark-to-market (shares * current
+        # price) for the open-position component of HWM, not cost basis.
+        # Cost basis would silently ratchet HWM upward after every USDC
+        # deposit or payout even when positions are deeply underwater, which
+        # made the max-drawdown halt progressively harder to trip over time.
+        mark_to_market = sum(
+            (getattr(p, "current_price", None) or p.entry_price) * p.shares
+            for p in self.positions
+        )
+        self.high_water_mark = max(self.high_water_mark, self.bankroll + mark_to_market)
 
     # ── Cost tracking ─────────────────────────────────────────────────
 
     def record_api_cost(self, input_tokens: int, output_tokens: int) -> None:
-        """Deduct inference cost from bankroll. The agent pays for its own thinking."""
+        """Record inference cost. The agent pays for its own thinking.
+
+        Audit 2026-05-19 HIGH #24: prior version also did
+        `self.bankroll -= cost`, but in LIVE mode the next sync_balance()
+        overwrites bankroll with on-chain USDC, undoing the deduction.
+        Result: bankroll meant different things in paper vs live mode and
+        paper-mode results stopped being a faithful predictor of live
+        performance.
+
+        New invariant: bankroll tracks ONLY cash flows we'd see in live
+        mode (deposits, payouts, fees). API cost is tracked separately on
+        total_api_cost; effective_bankroll() returns the spendable
+        bankroll net of API spend.
+        """
         cost = (input_tokens * INPUT_COST_PER_MTOK / 1_000_000) + \
                (output_tokens * OUTPUT_COST_PER_MTOK / 1_000_000)
         self.total_api_cost += cost
-        self.bankroll -= cost
+
+    def effective_bankroll(self) -> float:
+        """Bankroll minus accumulated API spend.
+
+        Helper for displays and analyses that want the post-API-cost
+        number (e.g. "what did the bot really earn after paying for
+        thought?"). Internal sizing / halt logic still uses raw bankroll
+        so paper and live modes behave consistently.
+        """
+        return self.bankroll - self.total_api_cost
 
     def remove_ghost_position(self, condition_id: str) -> None:
         """Remove a phantom position that has no actual on-chain tokens.
@@ -395,5 +489,19 @@ class Portfolio:
         )
 
     def reset_daily(self) -> None:
-        """Reset daily tracking. Call at the start of each new trading day."""
-        self.daily_start_value = self.bankroll
+        """Reset daily tracking. Call at the start of each new trading day.
+
+        The "daily start value" anchor must be the TOTAL portfolio value
+        (cash + open exposure) at day start, not cash alone. Otherwise the
+        daily-stop-loss ratio compares today's full portfolio swing against
+        today's cash base only, which trips the safety rail far too
+        aggressively whenever exposure dominates the book.
+
+        Concrete failure pre-fix: at $50 cash + $130 open exposure, a normal
+        $10 mark-to-market wiggle on the open book is ~5.5% of true
+        portfolio value but ~20% of cash -- right at the default
+        `daily_stop_loss_pct` and the bot would halt itself.
+
+        Audit 2026-05-19 HIGH #21.
+        """
+        self.daily_start_value = self.bankroll + self.total_exposure()

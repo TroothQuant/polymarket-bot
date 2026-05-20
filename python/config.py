@@ -103,6 +103,32 @@ class BotConfig:
     review_reestimate_threshold_pct: float = 0.10
     review_ensemble_size: int = 3
 
+    # Phased (bankroll-aware) exits
+    #
+    # The bot's behavior should adapt to portfolio size. At small bankroll, capital
+    # efficiency matters more than per-position max upside — cycle hard, take quick
+    # gains, redeploy. At large bankroll, hold-to-resolution dominates (per the whale
+    # research at ~/Projects/trooth-whales: 93% of top-whale trades are pure holds).
+    #
+    # Phase is determined by portfolio_value = bankroll + total_exposure.
+    #   < phase1_threshold        → P1: take_profit_pct + max_hold_days
+    #   < phase2_threshold        → P2: phase2_take_profit_pct + phase2_max_hold_days
+    #   ≥ phase2_threshold        → P3: no phase-based exits (only stop-loss / 0.95 / edge-gone)
+    enable_phased_exits: bool = True
+    phase1_threshold: float = 1000.0
+    phase2_threshold: float = 5000.0
+    phase1_take_profit_pct: float = 0.30
+    phase1_max_hold_days: int = 14
+    phase2_take_profit_pct: float = 0.50
+    phase2_max_hold_days: int = 45
+
+    # Maximum time-to-resolution at entry (added 2026-05-19).
+    # Pairs with the phased-exit windows above so the bot doesn't enter a 200-day
+    # trade just to have it time-cut after 14 days. Set to 0.0 to disable. At
+    # phase 3 (large bankroll) the cap is removed automatically.
+    max_time_to_resolution_hours_phase1: float = 336.0   # 14 days
+    max_time_to_resolution_hours_phase2: float = 1080.0  # 45 days
+
     # Capital
     initial_bankroll: float = 10000.0
 
@@ -206,6 +232,15 @@ class BotConfig:
             exit_edge_buffer=get("exit_edge_buffer", 0.05),
             review_reestimate_threshold_pct=get("review_reestimate_threshold_pct", 0.10),
             review_ensemble_size=get("review_ensemble_size", 3),
+            enable_phased_exits=get("enable_phased_exits", True),
+            phase1_threshold=get("phase1_threshold", 1000.0),
+            phase2_threshold=get("phase2_threshold", 5000.0),
+            phase1_take_profit_pct=get("phase1_take_profit_pct", 0.30),
+            phase1_max_hold_days=get("phase1_max_hold_days", 14),
+            phase2_take_profit_pct=get("phase2_take_profit_pct", 0.50),
+            phase2_max_hold_days=get("phase2_max_hold_days", 45),
+            max_time_to_resolution_hours_phase1=get("max_time_to_resolution_hours_phase1", 336.0),
+            max_time_to_resolution_hours_phase2=get("max_time_to_resolution_hours_phase2", 1080.0),
             initial_bankroll=get("initial_bankroll", 10000.0),
             polymarket_private_key=get("polymarket_private_key", ""),
             polymarket_funder_address=get("polymarket_funder_address", ""),

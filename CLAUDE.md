@@ -1,3 +1,48 @@
+# Operating Principles (READ FIRST — overrides everything else in this file)
+
+These two rules govern every session. They override conflicting guidance below.
+
+## 1. Communicate like Jonathon is a beginner
+
+- Jonathon does not code. He does not understand terminal language, file paths, shell syntax, build tools, or developer jargon by default.
+- Every response that asks him to do something must use **numbered steps**.
+- Every command must sit inside its own copy-pasteable code block — never run two commands on one line joined by `&&` unless he asks for that.
+- Every command must be preceded by one or two sentences in plain English explaining (a) what the command does and (b) which terminal tab he should run it in.
+- Avoid jargon. If a technical term is unavoidable, define it in one sentence the first time it appears in the session. Examples of terms to define on first use: `PATH`, `port`, `process`, `commit`, `dry run`, `kill`, `source`, `rc file`, `WAL`, `mount`.
+- Never write "just run X" or "as you know" or "obviously" — every instruction needs context.
+- Default to showing commands one at a time with a confirmation step between them. Only batch when Jonathon explicitly says so.
+- When something goes wrong, lead with a plain-English explanation of what happened before the fix. Don't paste raw error messages without translating them.
+
+## 2. Operate autonomously
+
+- Default to **acting and then reporting**. Do not ask for approval on routine operational decisions.
+- Use best judgment informed by: the bot's documented edge strategy, the current portfolio state, today's research and briefing, and what is most likely to keep both bots **healthy and profitable**.
+
+### Decisions to make WITHOUT asking
+- Closing redundant or highly correlated positions to free capital
+- Tuning per-cycle thresholds (Kelly fraction, position caps, category caps, stop-loss percentage, min edge)
+- Applying code patches that don't change trading semantics (bug fixes, dedup logic, dashboard fixes, scheduler improvements)
+- Restarting bots after a patch
+- Choosing which of two similar positions to keep
+- Picking which file location to write outputs to
+- Deleting duplicate database rows (always with a backup written first)
+- Picking the right format / chart settings / log verbosity
+
+### Decisions that REQUIRE asking first
+- Moving from paper trading to live trading (real money)
+- Sending money or initiating any transfer
+- Sending email on Jonathon's behalf to third parties
+- Changing the bot's core strategy archetype (e.g. switching from edge-based to momentum-based)
+- Killing an entire trading category permanently
+- Irreversible deletion of source code, git history, or backups
+- Any action with legal or financial implications beyond paper-trading tuning
+
+### How to track progress
+- Report what was done, not what is planned. Past tense.
+- If intent or scope is ambiguous (rare), one targeted clarifying question at the start of the session is fine. Once scope is clear, execute without re-asking.
+
+---
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -7,6 +52,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Polymarket trading bot that estimates fair market probabilities via an AI ensemble (Anthropic, Gemini, OpenAI, OpenRouter, or Azure OpenAI), finds mispricing, and executes trades on Polymarket with Kelly criterion sizing. The agent pays for its own inference from its bankroll.
 
 Two implementations: **Python** (`python/`) and **.NET 8** (`dotnet/PolymarketBot/`). Both share the same logic, config, and data formats.
+
+## Operational state (added 2026-05-19, end-of-day)
+
+Current risk-sizing config (in `polymarket_bot_config.json`):
+- `kelly_fraction: 0.15` (was 0.20)
+- `max_position_pct: 0.10` (was 0.15)
+- `max_category_exposure_pct: 0.25` (was 0.80 — root cause of the original Iran cluster)
+- `max_concurrent_positions: 10`
+
+Phase-aware time-to-resolution filter (added `python/main.py` + `config.py`):
+- P1 (portfolio < $1K): max 336h (14 days) to resolution; scanner reranks by `volume_24hr / sqrt(hours_to_resolution + 24)` so short-cycle compounding is preferred.
+- P2 (portfolio < $5K): max 1080h (45 days).
+- P3 (portfolio ≥ $5K): no cap (whale-style hold-to-resolution).
+
+API key lives in `polymarket_bot_config.json` (NOT in shell env) so it survives terminal closes. The `anthropic_api_key` field is loaded by `config.py::from_env()` and used regardless of process env vars.
+
+## Watch out for SIGTERM-ignoring zombie processes
+
+main.py has been observed ignoring SIGTERM. The "stop" command appears to succeed, but the process keeps running and overwrites portfolio.json on heartbeat (~9 min in), clobbering close-out scripts.
+
+Before declaring the bot "stopped", confirm with:
+```
+ps aux | grep -i "python.*main.py" | grep -v grep
+```
+If anything comes back, force-kill with `kill -9 <PID>`. Otherwise a "restart" spawns a NEW process alongside the zombie and both write to the same files.
+
+## The 25% category cap structurally fixes wash trades
+
+When the bot closes a position and then re-buys the same condition_id on the next cycle (the "wash trade memory gap" noted in earlier session logs), the new 25% category cap blocks it if other positions in that category already fill the cap. Verified live: bot tried to re-buy "Will the U.S. invade Iran before 2027? NO" within 7 minutes of closing it; the 25% geopolitics cap blocked the wash. Don't relax this cap without thinking about the wash-trade implication.
 
 ## Running
 

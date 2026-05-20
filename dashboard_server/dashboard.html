@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trooth Polymarket Trading</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0d1117;
@@ -15,17 +16,24 @@
     --fg-faint: #6e7681;
     --accent: #58a6ff;
     --green: #3fb950;
+    --green-dim: rgba(63,185,80,0.15);
     --yellow: #d29922;
     --red: #f85149;
+    --red-dim: rgba(248,81,73,0.15);
+    --weather: #58a6ff;
+    --claude: #d2a8ff;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
+  html, body { margin: 0; padding: 0; min-height: 100%; }
   body {
     background: var(--bg);
     color: var(--fg);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding-bottom: 60px;
   }
+
+  /* Header */
   header {
     background: var(--bg-elev);
     border-bottom: 1px solid var(--border);
@@ -35,127 +43,206 @@
     gap: 16px;
     flex-wrap: wrap;
   }
-  header h1 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.3px; }
   header .meta { color: var(--fg-mute); font-size: 12px; font-family: var(--mono); }
   header .controls { margin-left: auto; display: flex; gap: 12px; align-items: center; }
   header button {
-    background: var(--bg-elev-2);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    padding: 5px 12px;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 12px;
+    background: var(--bg-elev-2); color: var(--fg); border: 1px solid var(--border);
+    padding: 5px 12px; border-radius: 5px; cursor: pointer; font-size: 12px;
   }
   header button:hover { background: #2a3340; }
   header label { font-size: 12px; color: var(--fg-mute); cursor: pointer; display: flex; align-items: center; gap: 6px; }
   header input[type=checkbox] { accent-color: var(--accent); }
 
+  /* KPI strip */
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    padding: 16px 20px 0;
+  }
+  @media (max-width: 1100px) { .kpi-strip { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 600px) { .kpi-strip { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .kpi .label { font-size: 11px; color: var(--fg-mute); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi .value { font-family: var(--mono); font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .kpi .value.pos { color: var(--green); }
+  .kpi .value.neg { color: var(--red); }
+  .kpi .sub { font-size: 11px; color: var(--fg-faint); margin-top: 4px; font-family: var(--mono); }
+
+  /* Chart section */
+  .chart-section {
+    margin: 16px 20px 0;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .chart-header {
+    display: flex; align-items: center; gap: 16px; margin-bottom: 8px;
+  }
+  .chart-header h2 { font-size: 13px; font-weight: 600; margin: 0; color: var(--fg-mute); text-transform: uppercase; letter-spacing: 0.5px; }
+  .range-buttons { margin-left: auto; display: flex; gap: 4px; }
+  .range-buttons button {
+    background: var(--bg-elev-2); color: var(--fg-mute); border: 1px solid var(--border);
+    padding: 4px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; font-family: var(--mono);
+  }
+  .range-buttons button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .chart-canvas-wrap { height: 220px; position: relative; }
+
+  /* Main two-column */
   main {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
-    padding: 16px;
+    padding: 16px 20px 0;
   }
-  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 
-  .col {
+  .bot-column {
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    min-height: 80vh;
+    overflow: hidden;
   }
-  .col h2 {
-    margin: 0;
-    font-size: 14px;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--fg-mute);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .badge {
-    display: inline-block;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--fg-faint);
-  }
-  .badge.green { background: var(--green); box-shadow: 0 0 8px rgba(63, 185, 80, 0.45); }
-  .badge.yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(210, 153, 34, 0.45); }
-  .badge.red { background: var(--red); box-shadow: 0 0 8px rgba(248, 81, 73, 0.45); }
-  .status-text { font-size: 11px; color: var(--fg-mute); font-family: var(--mono); }
-
-  .equity {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .bot-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
     background: var(--bg-elev-2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
+    display: flex; align-items: center; gap: 10px;
   }
-  .equity .label { color: var(--fg-mute); font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; }
-  .equity .value { font-family: var(--mono); font-size: 26px; font-weight: 600; }
-  .equity .sub { font-family: var(--mono); font-size: 12px; color: var(--fg-mute); }
-  .equity .sub .pos { color: var(--green); }
-  .equity .sub .neg { color: var(--red); }
+  .bot-header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-faint);
+    display: inline-block;
+  }
+  .status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.stale { background: var(--yellow); }
+  .status-dot.error { background: var(--red); }
+  .bot-header .status-text {
+    font-size: 11px; font-family: var(--mono); color: var(--fg-mute); margin-left: auto;
+  }
+  .bot-header .bot-color {
+    width: 10px; height: 10px; border-radius: 2px;
+  }
+  .bot-header .bot-color.weather { background: var(--weather); }
+  .bot-header .bot-color.claude { background: var(--claude); }
+
+  .bot-summary {
+    padding: 10px 16px;
+    background: var(--bg-elev-2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 12px;
+    color: var(--fg-mute);
+    display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  .bot-summary .num { color: var(--fg); font-weight: 600; }
 
   .section-title {
-    font-size: 11px;
-    color: var(--fg-mute);
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 2px;
+    padding: 10px 16px 4px;
+    font-size: 11px; font-weight: 600; color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    display: flex; align-items: center; justify-content: space-between;
   }
+  .section-title .count { font-family: var(--mono); color: var(--fg-faint); font-weight: 500; }
 
-  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-  th { text-align: left; color: var(--fg-mute); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-  td { padding: 6px 8px; border-bottom: 1px solid var(--bg-elev-2); }
-  tr:last-child td { border-bottom: none; }
-  td.num { text-align: right; }
-  td.pos { color: var(--green); }
-  td.neg { color: var(--red); }
-  td.muted { color: var(--fg-mute); }
-  .empty { color: var(--fg-faint); font-style: italic; padding: 12px 4px; font-size: 12px; }
-
-  .log {
-    background: var(--bg);
+  /* Position cards */
+  .positions-list { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .pos-card {
+    background: var(--bg-elev-2);
     border: 1px solid var(--border);
+    border-left: 3px solid var(--fg-faint);
     border-radius: 6px;
     padding: 10px 12px;
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.5;
-    max-height: 320px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    color: var(--fg);
+    font-size: 13px;
   }
-  .log .line { display: block; }
-  .log .line.error { color: var(--red); }
-  .log .line.warn { color: var(--yellow); }
-  .log .line.ts { color: var(--fg-faint); }
-  .log .line.info { color: var(--fg); }
+  .pos-card.winning { border-left-color: var(--green); }
+  .pos-card.losing { border-left-color: var(--red); }
+  .pos-card .pos-question {
+    font-weight: 500; margin-bottom: 6px; line-height: 1.35;
+  }
+  .pos-card .side-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; font-family: var(--mono); margin-right: 6px;
+  }
+  .side-badge.NO { background: rgba(248,81,73,0.2); color: var(--red); }
+  .side-badge.YES { background: rgba(63,185,80,0.2); color: var(--green); }
+  .platform-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; font-family: var(--mono); margin-left: 6px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .platform-badge.polymarket { background: rgba(22,82,240,0.18); color: #6c93ff; }
+  .platform-badge.kalshi { background: rgba(0,179,164,0.18); color: #4cd6c1; }
+  .pos-card .row {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
+  }
+  .pos-card .row .lbl { color: var(--fg-faint); font-size: 10px; text-transform: uppercase; }
+  .pos-card .row .v { color: var(--fg); font-size: 12px; }
+  .pos-card .row .v.pos { color: var(--green); }
+  .pos-card .row .v.neg { color: var(--red); }
+  .pos-card .row .v.mute { color: var(--fg-mute); }
+  .pos-card .meta-row {
+    display: flex; gap: 14px; margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; color: var(--fg-mute); flex-wrap: wrap;
+  }
+  .pos-card .meta-row .item .lbl { color: var(--fg-faint); font-size: 10px; text-transform: uppercase; margin-right: 4px; }
+  .countdown { color: var(--accent); font-weight: 600; }
+  .countdown.imminent { color: var(--yellow); }
+  .countdown.overdue { color: var(--yellow); }
+  .countdown.stuck   { color: var(--red); }
 
-  .err-card {
-    background: rgba(248, 81, 73, 0.08);
-    border: 1px solid rgba(248, 81, 73, 0.3);
-    border-radius: 6px;
-    padding: 10px 12px;
-    font-size: 12px;
-    font-family: var(--mono);
-    color: #ffcfcb;
+  /* Collapsibles */
+  details.collapsible {
+    background: var(--bg-elev-2);
+    border-top: 1px solid var(--border);
+    margin: 0; padding: 0;
+  }
+  details.collapsible summary {
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 11px; font-weight: 600; color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    list-style: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  details.collapsible summary::-webkit-details-marker { display: none; }
+  details.collapsible summary::after {
+    content: "▸"; margin-left: auto; transition: transform 0.15s; color: var(--fg-faint);
+  }
+  details.collapsible[open] summary::after { transform: rotate(90deg); }
+  details.collapsible .body { padding: 0 16px 12px; }
+
+  /* Trade rows / log rows */
+  .row-table { width: 100%; font-family: var(--mono); font-size: 11px; }
+  .row-table th, .row-table td { padding: 4px 6px; text-align: left; vertical-align: top; }
+  .row-table th { color: var(--fg-faint); font-weight: 500; text-transform: uppercase; font-size: 10px; }
+  .row-table tr td { border-bottom: 1px solid #20262e; }
+  .log-line {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute);
+    padding: 2px 0; line-height: 1.5;
+  }
+  .log-line .ts { color: var(--fg-faint); margin-right: 8px; }
+  .log-line .level { display: inline-block; min-width: 50px; }
+  .log-line .level.info { color: var(--accent); }
+  .log-line .level.warning { color: var(--yellow); }
+  .log-line .level.error { color: var(--red); }
+  .log-line .level.debug { color: var(--fg-faint); }
+
+  .empty {
+    padding: 20px 16px; color: var(--fg-faint); font-size: 12px; text-align: center; font-style: italic;
+  }
+
+  .footnote {
+    margin: 20px 20px 0; color: var(--fg-faint); font-size: 11px; font-family: var(--mono);
   }
 </style>
 </head>
@@ -163,324 +250,640 @@
 
 <header>
   <h1>Trooth Polymarket Trading</h1>
-  <span class="meta">last refresh <span id="last-refresh">—</span></span>
+  <span class="meta">last refresh <span id="refresh-ts">—</span></span>
   <div class="controls">
-    <label><input type="checkbox" id="auto" checked /> auto-refresh 30s</label>
-    <button id="refresh-btn">refresh now</button>
+    <label><input type="checkbox" id="autorefresh" checked> auto-refresh 30s</label>
+    <button id="refresh-now">refresh now</button>
   </div>
 </header>
 
+<section class="kpi-strip">
+  <div class="kpi"><div class="label">Portfolio Value</div><div class="value" id="kpi-total-value">—</div><div class="sub" id="kpi-total-value-sub"></div></div>
+  <div class="kpi"><div class="label">Realized P&L</div><div class="value" id="kpi-realized">—</div><div class="sub">across all closed trades</div></div>
+  <div class="kpi"><div class="label">Unrealized P&L</div><div class="value" id="kpi-unrealized">—</div><div class="sub">open positions</div></div>
+  <div class="kpi"><div class="label">Total Exposure</div><div class="value" id="kpi-exposure">—</div><div class="sub" id="kpi-exposure-sub"></div></div>
+  <div class="kpi"><div class="label">Real API Spend</div><div class="value" id="kpi-apispend">—</div><div class="sub">claude bot only</div></div>
+  <div class="kpi"><div class="label">Open Positions</div><div class="value" id="kpi-positions">—</div><div class="sub" id="kpi-positions-sub"></div></div>
+</section>
+
+<section class="chart-section">
+  <div class="chart-header">
+    <h2>Portfolio Value Over Time</h2>
+    <div class="range-buttons">
+      <button data-range="24h" class="active">24h</button>
+      <button data-range="7d">7d</button>
+      <button data-range="all">All</button>
+    </div>
+  </div>
+  <div class="chart-canvas-wrap"><canvas id="pnl-chart"></canvas></div>
+</section>
+
 <main>
-
-  <!-- ============================ WEATHER BOT ============================ -->
-  <section class="col" id="weather-col">
-    <h2><span class="badge" id="weather-badge"></span> Weather Bot <span class="status-text" id="weather-status">checking…</span></h2>
-
-    <div class="equity">
-      <span class="label">Bankroll (paper)</span>
-      <span class="value" id="weather-bankroll">—</span>
-      <span class="sub">
-        Realized P&amp;L <span id="weather-pnl">—</span> &nbsp;·&nbsp; Trades <span id="weather-trade-count">—</span> &nbsp;·&nbsp; Win rate <span id="weather-winrate">—</span>
-      </span>
+  <!-- Weather Bot Column -->
+  <div class="bot-column">
+    <div class="bot-header">
+      <span class="bot-color weather"></span>
+      <h2>Weather Bot</h2>
+      <span class="status-dot" id="weather-status-dot"></span>
+      <span class="status-text" id="weather-status-text">—</span>
     </div>
+    <div class="bot-summary" id="weather-summary">—</div>
+    <div class="section-title">Open Positions <span class="count" id="weather-pos-count"></span></div>
+    <div class="positions-list" id="weather-positions"><div class="empty">loading…</div></div>
+    <details class="collapsible">
+      <summary>Recent Trades</summary>
+      <div class="body" id="weather-trades"><div class="empty">loading…</div></div>
+    </details>
+    <details class="collapsible">
+      <summary>Recent Events</summary>
+      <div class="body" id="weather-events"><div class="empty">loading…</div></div>
+    </details>
+  </div>
 
-    <div>
-      <div class="section-title">Recent trades</div>
-      <div id="weather-trades"></div>
+  <!-- Claude Bot Column -->
+  <div class="bot-column">
+    <div class="bot-header">
+      <span class="bot-color claude"></span>
+      <h2>Claude Ensemble Bot</h2>
+      <span class="status-dot" id="claude-status-dot"></span>
+      <span class="status-text" id="claude-status-text">—</span>
     </div>
-
-    <div>
-      <div class="section-title">Weather signals</div>
-      <div id="weather-signals"></div>
-    </div>
-
-    <div>
-      <div class="section-title">Recent events</div>
-      <div class="log" id="weather-events"></div>
-    </div>
-  </section>
-
-
-  <!-- ============================ CLAUDE BOT ============================ -->
-  <section class="col" id="claude-col">
-    <h2><span class="badge" id="claude-badge"></span> Claude Ensemble Bot <span class="status-text" id="claude-status">checking…</span></h2>
-
-    <div class="equity">
-      <span class="label">Bankroll &amp; AI spend</span>
-      <span class="value" id="claude-bankroll">—</span>
-      <span class="sub">
-        AI spent <span id="claude-spent">—</span> &nbsp;·&nbsp; Realized P&amp;L <span id="claude-pnl">—</span> &nbsp;·&nbsp; Trades <span id="claude-trade-count">—</span>
-      </span>
-    </div>
-
-    <div>
-      <div class="section-title">Open positions</div>
-      <div id="claude-positions"></div>
-    </div>
-
-    <div>
-      <div class="section-title">Recent trades</div>
-      <div id="claude-trades"></div>
-    </div>
-
-    <div>
-      <div class="section-title">Recent log</div>
-      <div class="log" id="claude-log"></div>
-    </div>
-  </section>
-
+    <div class="bot-summary" id="claude-summary">—</div>
+    <div class="section-title">Open Positions <span class="count" id="claude-pos-count"></span></div>
+    <div class="positions-list" id="claude-positions"><div class="empty">loading…</div></div>
+    <details class="collapsible">
+      <summary>Recent Trades</summary>
+      <div class="body" id="claude-trades"><div class="empty">loading…</div></div>
+    </details>
+    <details class="collapsible">
+      <summary>Recent Log</summary>
+      <div class="body" id="claude-log"><div class="empty">loading…</div></div>
+    </details>
+  </div>
 </main>
 
+<p class="footnote">
+  Polymarket paper-mode research project. Both bots run locally on this Mac. Dashboard reads <code>portfolio.json</code>,
+  <code>trades.jsonl</code>, <code>bot.log</code>, and <code>snapshots.db</code> — never writes.
+</p>
+
 <script>
-// ============================== utilities ==============================
+const CLAUDE_INITIAL = 200.00;
 
-const fmtUsd = (n) =>
-  (n === null || n === undefined || Number.isNaN(n))
-    ? "—"
-    : "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let currentRange = "24h";
+let pnlChart = null;
 
-const fmtPct = (n) =>
-  (n === null || n === undefined || Number.isNaN(n))
-    ? "—"
-    : (Number(n) * 100).toFixed(1) + "%";
-
-const fmtNum = (n, d = 2) =>
-  (n === null || n === undefined || Number.isNaN(n))
-    ? "—"
-    : Number(n).toFixed(d);
-
-const fmtPnL = (n) => {
-  if (n === null || n === undefined || Number.isNaN(n)) return "—";
-  const s = (n >= 0 ? "+" : "") + fmtUsd(n).replace("$-", "-$");
-  return `<span class="${n >= 0 ? 'pos' : 'neg'}">${s}</span>`;
+// ── formatting helpers ──────────────────────────────────────────────────
+const fmtUsd = (v, dp = 2) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const s = Number(v).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  return `$${s}`;
 };
-
-const fmtTime = (ts) => {
-  if (!ts) return "—";
-  const d = (typeof ts === "number") ? new Date(ts * (ts > 1e12 ? 1 : 1000)) : new Date(ts);
-  if (isNaN(d.getTime())) return "—";
+const fmtSigned = (v, dp = 2) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v >= 0 ? "+" : "−";
+  return `${sign}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp })}`;
+};
+const fmtPct = (v, dp = 1) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v >= 0 ? "+" : "−";
+  return `${sign}${(Math.abs(v) * 100).toFixed(dp)}%`;
+};
+const fmtDuration = (secs) => {
+  if (secs == null || isNaN(secs)) return "—";
+  const abs = Math.abs(secs);
+  const d = Math.floor(abs / 86400);
+  const h = Math.floor((abs % 86400) / 3600);
+  const m = Math.floor((abs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+const fmtCountdown = (secs) => {
+  if (secs == null) return "—";
+  if (secs <= 0) {
+    // Past resolution date. For weather markets, NWS/UMA reporting lag of up
+    // to ~3 days is normal — flag as "awaiting close" (yellow). Beyond that
+    // it's likely actually stuck and should be checked.
+    const overdueDays = Math.abs(secs) / 86400;
+    if (overdueDays > 3) return `stuck (${Math.floor(overdueDays)}d)`;
+    return "awaiting close";
+  }
+  return `in ${fmtDuration(secs)}`;
+};
+const fmtRefreshTs = (d) => {
   return d.toLocaleTimeString();
 };
 
-const escapeHtml = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-
-async function getJson(url) {
+// ── data fetchers ───────────────────────────────────────────────────────
+async function fetchJSON(path) {
   try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) return { _error: `HTTP ${r.status}`, _status: r.status, _body: await r.text().catch(() => "") };
+    const r = await fetch(path);
+    if (!r.ok) return null;
     return await r.json();
-  } catch (e) {
-    return { _error: String(e), _status: 0 };
-  }
+  } catch (e) { return null; }
 }
 
-function tableHtml(headers, rows, emptyMsg) {
-  if (!rows || rows.length === 0) {
-    return `<div class="empty">${escapeHtml(emptyMsg)}</div>`;
-  }
-  const head = headers.map((h) => `<th>${escapeHtml(h.label)}</th>`).join("");
-  const body = rows.map((r) =>
-    "<tr>" + headers.map((h) => {
-      const v = h.get(r);
-      const cls = h.cls ? h.cls(r) : "";
-      return `<td class="${cls}">${v ?? ""}</td>`;
-    }).join("") + "</tr>"
-  ).join("");
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+// ── KPI computation ─────────────────────────────────────────────────────
+function renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions) {
+  // Weather
+  const wBank = weatherStats?.bankroll ?? 0;
+  const wPositions = weatherPositions || [];
+  const wExposure = wPositions.reduce((s, p) => s + (p.size_usd || 0), 0);
+  const wUnrealized = wPositions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+
+  // Claude
+  const cBank = claudePortfolio?.bankroll ?? 0;
+  const cRealized = claudePortfolio?.total_realized_pnl ?? 0;
+  const positions = claudePositions ?? claudePortfolio?.positions ?? [];
+  const cExposure = positions.reduce((s, p) => s + (p.size_usd || 0), 0);
+  const cUnrealized = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+  const claudeApiSpend = (CLAUDE_INITIAL - cBank - cExposure + cRealized);
+
+  // Combined
+  const totalBank = (wBank || 0) + (cBank || 0);
+  const totalRealized = (weatherStats?.total_pnl ?? 0) + cRealized;
+  const totalUnrealized = cUnrealized + wUnrealized;
+  const totalExposure = cExposure + wExposure;
+  const totalValue = totalBank + totalExposure + totalUnrealized;
+
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const setSign = (id, v) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove("pos","neg");
+    if (v > 0.005) el.classList.add("pos");
+    else if (v < -0.005) el.classList.add("neg");
+  };
+
+  setText("kpi-total-value", fmtUsd(totalValue));
+  setText("kpi-total-value-sub", `weather $${(wBank + wExposure + wUnrealized).toFixed(0)} + claude $${(cBank + cExposure + cUnrealized).toFixed(2)}`);
+
+  setText("kpi-realized", fmtSigned(totalRealized));
+  setSign("kpi-realized", totalRealized);
+
+  setText("kpi-unrealized", fmtSigned(totalUnrealized));
+  setSign("kpi-unrealized", totalUnrealized);
+
+  setText("kpi-exposure", fmtUsd(totalExposure));
+  setText("kpi-exposure-sub", `${positions.length + wPositions.length} open`);
+
+  setText("kpi-apispend", fmtUsd(claudeApiSpend, 2));
+
+  const totalPositions = (positions.length || 0) + wPositions.length;
+  setText("kpi-positions", String(totalPositions));
+  setText("kpi-positions-sub", `${positions.length} claude / ${wPositions.length} weather`);
 }
 
-function setBadge(el, state) {
-  el.classList.remove("green", "yellow", "red");
-  if (state === "green") el.classList.add("green");
-  else if (state === "yellow") el.classList.add("yellow");
-  else el.classList.add("red");
+// ── Weather bot column ──────────────────────────────────────────────────
+function parseWeatherEndDate(eventSlug) {
+  // event_slug like "highest-temperature-in-denver-on-may-17-2026"
+  if (!eventSlug) return null;
+  const m = eventSlug.match(/on-([a-z]+)-(\d{1,2})-(\d{4})/);
+  if (!m) return null;
+  const month = ["january","february","march","april","may","june","july","august","september","october","november","december"]
+    .indexOf(m[1].toLowerCase());
+  if (month < 0) return null;
+  // Settles at end of named day local time. Use 23:59 UTC as a rough proxy.
+  return Date.UTC(parseInt(m[3]), month, parseInt(m[2]), 23, 59, 0);
 }
 
-// ============================== Weather column ==============================
+function renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions) {
+  const dot = document.getElementById("weather-status-dot");
+  const txt = document.getElementById("weather-status-text");
+  const summary = document.getElementById("weather-summary");
+  const posList = document.getElementById("weather-positions");
+  const posCount = document.getElementById("weather-pos-count");
 
-async function refreshWeather() {
-  const badge = document.getElementById("weather-badge");
-  const statusEl = document.getElementById("weather-status");
-
-  const health = await getJson("/api/weather/health");
-  if (health._error) {
-    setBadge(badge, "red");
-    statusEl.textContent = `unreachable (${health._status || "no response"})`;
-    document.getElementById("weather-bankroll").textContent = "—";
-    document.getElementById("weather-pnl").textContent = "—";
-    document.getElementById("weather-trade-count").textContent = "—";
-    document.getElementById("weather-winrate").textContent = "—";
-    document.getElementById("weather-trades").innerHTML = `<div class="err-card">Weather bot unreachable on :8000</div>`;
-    document.getElementById("weather-signals").innerHTML = "";
-    document.getElementById("weather-events").innerHTML = "";
+  if (!weatherStats) {
+    dot.className = "status-dot error";
+    txt.textContent = "unreachable";
+    summary.textContent = "weather bot not reachable on port 8000";
+    posList.innerHTML = '<div class="empty">no data</div>';
     return;
   }
-  setBadge(badge, "green");
-  statusEl.textContent = "ok";
+  dot.className = "status-dot ok";
+  txt.textContent = `bankroll ${fmtUsd(weatherStats.bankroll, 0)}`;
 
-  const dash = await getJson("/api/weather/dashboard");
-  if (dash._error) {
-    document.getElementById("weather-bankroll").textContent = "(reachable, dashboard data unavailable)";
+  // Prefer the enriched positions endpoint; fall back to filtering trades if unavailable.
+  let pending = (weatherPositions && Array.isArray(weatherPositions)) ? weatherPositions : null;
+  if (!pending) {
+    pending = (weatherTrades || []).filter(t => !t.settled).map(t => ({
+      id: t.id,
+      event_slug: t.event_slug,
+      direction: t.direction,
+      size_usd: t.size,
+      entry_price: t.entry_price,
+      current_price: null,
+      unrealized_pnl: null,
+      unrealized_pct: null,
+      edge_at_entry: t.edge_at_entry,
+      timestamp: t.timestamp,
+    }));
+  }
+  const settled = (weatherTrades || []).filter(t => t.settled);
+  posCount.textContent = `(${pending.length})`;
+
+  const totalUnrealized = pending.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+  summary.innerHTML = `
+    <span><span class="num">${fmtUsd(weatherStats.bankroll, 0)}</span> bankroll</span>
+    <span><span class="num">${pending.length}</span> open</span>
+    <span><span class="num">${settled.length}</span> settled</span>
+    <span><span class="num">${fmtSigned(weatherStats.total_pnl)}</span> realized</span>
+    <span><span class="num">${fmtSigned(totalUnrealized)}</span> unrealized</span>
+  `;
+
+  if (pending.length === 0) {
+    posList.innerHTML = '<div class="empty">no open positions</div>';
+  } else {
+    posList.innerHTML = pending.map(t => {
+      const sizeUsd = t.size_usd || 0;
+      const sideUpper = (t.direction || "").toUpperCase();
+      const sideLabel = sideUpper === "YES" ? "YES" : "NO";
+      const endMs = parseWeatherEndDate(t.event_slug);
+      const remaining = endMs ? Math.floor((endMs - Date.now()) / 1000) : null;
+      let cdClass = "countdown";
+      if (remaining !== null && remaining < 0) {
+        cdClass = (Math.abs(remaining) / 86400 > 3) ? "countdown stuck" : "countdown overdue";
+      }
+      else if (remaining !== null && remaining < 6 * 3600) cdClass = "countdown imminent";
+
+      const unrl = t.unrealized_pnl;
+      const unrlPct = t.unrealized_pct;
+      const curr = t.current_price;
+      let cardClass = "pos-card";
+      if (unrl != null && unrl > 0.5) cardClass += " winning";
+      else if (unrl != null && unrl < -0.5) cardClass += " losing";
+
+      const entryToNow = (curr != null)
+        ? `${(t.entry_price ?? 0).toFixed(3)} → ${curr.toFixed(3)}`
+        : `${(t.entry_price ?? 0).toFixed(3)} → —`;
+
+      const unrealizedDisplay = (unrl != null)
+        ? `<span class="${unrl > 0.005 ? 'pos' : unrl < -0.005 ? 'neg' : 'mute'}">${fmtSigned(unrl)} (${fmtPct(unrlPct)})</span>`
+        : `<span class="mute">—</span>`;
+
+      const edgeDisplay = (t.edge_at_entry != null)
+        ? `${(t.edge_at_entry*100).toFixed(0)}%`
+        : "—";
+
+      const platform = (t.platform || "polymarket").toLowerCase();
+      const platformBadge = `<span class="platform-badge ${platform}">${platform}</span>`;
+
+      return `
+        <div class="${cardClass}">
+          <div class="pos-question"><span class="side-badge ${sideLabel}">${sideLabel}</span>${escapeHtml(t.event_slug || "?")}${platformBadge}</div>
+          <div class="row">
+            <div><div class="lbl">Entry → Now</div><div class="v">${entryToNow}</div></div>
+            <div><div class="lbl">Size</div><div class="v">${fmtUsd(sizeUsd, 0)}</div></div>
+            <div><div class="lbl">Unrealized</div><div class="v">${unrealizedDisplay}</div></div>
+          </div>
+          <div class="meta-row">
+            <div class="item"><span class="lbl">Opened</span>${t.timestamp ? new Date(t.timestamp).toLocaleString() : "—"}</div>
+            <div class="item"><span class="lbl">Settles</span><span class="${cdClass}" data-end-ms="${endMs || ''}">${remaining !== null ? fmtCountdown(remaining) : "unknown"}</span></div>
+            <div class="item"><span class="lbl">Edge at entry</span>${edgeDisplay}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  // Trades
+  const tradesDiv = document.getElementById("weather-trades");
+  if (!weatherTrades || weatherTrades.length === 0) {
+    tradesDiv.innerHTML = '<div class="empty">no trades yet</div>';
+  } else {
+    const recent = weatherTrades.slice(-10).reverse();
+    tradesDiv.innerHTML = `<table class="row-table"><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Price</th><th>Result</th></tr>` +
+      recent.map(t => {
+        const platform = (t.platform || "polymarket").toLowerCase();
+        return `
+        <tr>
+          <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
+          <td>${escapeHtml((t.event_slug || "?").slice(0, 40))}<span class="platform-badge ${platform}">${platform}</span></td>
+          <td>${(t.direction || "").toUpperCase()}</td>
+          <td>${fmtUsd(t.size, 0)}</td>
+          <td>${(t.entry_price ?? 0).toFixed(3)}</td>
+          <td>${t.result || "pending"} ${t.pnl != null ? fmtSigned(t.pnl) : ""}</td>
+        </tr>`;
+      }).join("") + `</table>`;
+  }
+
+  // Events
+  const evDiv = document.getElementById("weather-events");
+  if (!weatherEvents || weatherEvents.length === 0) {
+    evDiv.innerHTML = '<div class="empty">no events</div>';
+  } else {
+    const recent = weatherEvents.slice(-25).reverse();
+    evDiv.innerHTML = recent.map(e => `
+      <div class="log-line">
+        <span class="ts">${new Date(e.timestamp).toLocaleTimeString()}</span>
+        <span class="level ${e.type}">${e.type}</span>
+        ${escapeHtml(e.message || "")}
+      </div>`).join("");
+  }
+}
+
+// ── Claude bot column ──────────────────────────────────────────────────
+function renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog, claudeStatus) {
+  const dot = document.getElementById("claude-status-dot");
+  const txt = document.getElementById("claude-status-text");
+  const summary = document.getElementById("claude-summary");
+  const posList = document.getElementById("claude-positions");
+  const posCount = document.getElementById("claude-pos-count");
+
+  if (!claudePortfolio) {
+    dot.className = "status-dot error";
+    txt.textContent = "no portfolio data";
+    summary.textContent = "—";
+    posList.innerHTML = '<div class="empty">no data</div>';
     return;
   }
+  const live = claudeStatus?.is_running;
+  const age = claudeStatus?.age_seconds || 0;
+  dot.className = "status-dot " + (live ? "ok" : (age > 30 * 60 ? "error" : "stale"));
+  txt.textContent = live ? `last cycle ${Math.round(age)}s ago` : `stale (${Math.round(age / 60)}m ago)`;
 
-  const stats = dash.stats || {};
-  document.getElementById("weather-bankroll").textContent = fmtUsd(stats.bankroll);
-  document.getElementById("weather-pnl").innerHTML = fmtPnL(stats.total_pnl);
-  document.getElementById("weather-trade-count").textContent = stats.total_trades ?? "—";
-  document.getElementById("weather-winrate").textContent = fmtPct(stats.win_rate);
+  const positions = claudePositions || claudePortfolio.positions || [];
+  const exposure = positions.reduce((s, p) => s + (p.size_usd || 0), 0);
+  const unrealized = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+  posCount.textContent = `(${positions.length})`;
 
-  // Recent trades (last 10)
-  const trades = (dash.recent_trades || []).slice(0, 10);
-  document.getElementById("weather-trades").innerHTML = tableHtml(
-    [
-      { label: "Time",   get: (t) => fmtTime(t.timestamp || t.created_at) },
-      { label: "Market", get: (t) => escapeHtml((t.event_slug || t.market_ticker || t.market || "").toString().slice(0, 36)) },
-      { label: "Side",   get: (t) => escapeHtml(t.direction || t.side || "") },
-      { label: "Size",   get: (t) => fmtUsd(t.size), cls: () => "num" },
-      { label: "Price",  get: (t) => fmtNum(t.entry_price ?? t.price, 3), cls: () => "num" },
-      { label: "P&L",    get: (t) => fmtPnL(t.pnl ?? t.realized_pnl), cls: () => "num" },
-    ],
-    trades,
-    "no trades yet"
-  );
+  summary.innerHTML = `
+    <span><span class="num">${fmtUsd(claudePortfolio.bankroll, 2)}</span> bankroll</span>
+    <span><span class="num">${fmtUsd(exposure, 2)}</span> exposure</span>
+    <span><span class="num">${fmtSigned(claudePortfolio.total_realized_pnl)}</span> realized</span>
+    <span><span class="num">${fmtSigned(unrealized)}</span> unrealized</span>
+    <span><span class="num">${claudePortfolio.total_trades || 0}</span> total trades</span>
+  `;
 
-  // Weather signals
-  const signals = (dash.weather_signals || []).slice(0, 8);
-  document.getElementById("weather-signals").innerHTML = tableHtml(
-    [
-      { label: "Market", get: (s) => escapeHtml(String(s.title || s.market || s.question || "").slice(0, 50)) },
-      { label: "Side",   get: (s) => escapeHtml(s.direction || s.side || "") },
-      { label: "Edge",   get: (s) => fmtPct(s.edge), cls: (s) => (Number(s.edge) || 0) > 0 ? "num pos" : "num neg" },
-      { label: "Model",  get: (s) => fmtPct(s.model_probability), cls: () => "num" },
-      { label: "Market", get: (s) => fmtPct(s.market_probability), cls: () => "num" },
-    ],
-    signals,
-    "no weather signals"
-  );
-
-  // Recent events (read-only log)
-  const events = await getJson("/api/weather/events");
-  const evContainer = document.getElementById("weather-events");
-  if (events._error || !Array.isArray(events)) {
-    evContainer.innerHTML = `<div class="empty">events unavailable</div>`;
-  } else if (events.length === 0) {
-    evContainer.innerHTML = `<div class="empty">no events yet</div>`;
+  if (positions.length === 0) {
+    posList.innerHTML = '<div class="empty">no open positions</div>';
   } else {
-    evContainer.innerHTML = events.slice(-20).map((e) => {
-      const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
-      const type = (e.type || "info").toLowerCase();
-      const cls = (type === "error") ? "error" : (type === "warning") ? "warn" : "info";
-      return `<span class="line ${cls}"><span class="ts">${escapeHtml(t)}</span>  [${escapeHtml(type)}] ${escapeHtml(e.message || "")}</span>`;
+    posList.innerHTML = positions.map(p => {
+      const pnl = p.unrealized_pnl || 0;
+      const pnlPct = p.pnl_pct ?? ((p.entry_price > 0) ? (p.current_price - p.entry_price) / p.entry_price : 0);
+      let cardClass = "pos-card";
+      if (pnl > 0.5) cardClass += " winning";
+      else if (pnl < -0.5) cardClass += " losing";
+
+      const remaining = p.time_to_resolution_s;
+      let cdClass = "countdown";
+      if (remaining !== null && remaining !== undefined && remaining < 0) {
+        cdClass = (Math.abs(remaining) / 86400 > 3) ? "countdown stuck" : "countdown overdue";
+      }
+      else if (remaining != null && remaining < 6 * 3600) cdClass = "countdown imminent";
+
+      const edge = p.edge_at_entry != null ? (p.edge_at_entry * 100).toFixed(1) + "%" : "—";
+
+      return `
+        <div class="${cardClass}">
+          <div class="pos-question"><span class="side-badge ${p.side}">${p.side}</span>${escapeHtml(p.question || "?")}</div>
+          <div class="row">
+            <div><div class="lbl">Entry → Now</div><div class="v">${(p.entry_price ?? 0).toFixed(3)} → ${(p.current_price ?? 0).toFixed(3)}</div></div>
+            <div><div class="lbl">Size</div><div class="v">${fmtUsd(p.size_usd)}</div></div>
+            <div><div class="lbl">Unrealized</div><div class="v ${pnl > 0.005 ? 'pos' : pnl < -0.005 ? 'neg' : 'mute'}">${fmtSigned(pnl)} (${fmtPct(pnlPct)})</div></div>
+          </div>
+          <div class="meta-row">
+            <div class="item"><span class="lbl">Opened</span>${fmtDuration((Date.now()/1000) - (p.opened_at || 0))} ago</div>
+            <div class="item"><span class="lbl">Settles</span><span class="${cdClass}">${remaining != null ? fmtCountdown(remaining) : "unknown"}</span></div>
+            <div class="item"><span class="lbl">Edge at entry</span>${edge}</div>
+          </div>
+        </div>
+      `;
     }).join("");
-    evContainer.scrollTop = evContainer.scrollHeight;
-  }
-}
-
-// ============================== Claude column ==============================
-
-async function refreshClaude() {
-  const badge = document.getElementById("claude-badge");
-  const statusEl = document.getElementById("claude-status");
-
-  const status = await getJson("/api/claude/status");
-  const pf = await getJson("/api/claude/portfolio");
-
-  if (status._error || status.state === "missing") {
-    setBadge(badge, "red");
-    statusEl.textContent = status.state === "missing" ? "no portfolio file" : (status._error || "error");
-  } else if (status.state === "stale") {
-    setBadge(badge, "yellow");
-    statusEl.textContent = `stale (mtime ${Math.round(status.age_seconds / 60)}m ago)`;
-  } else {
-    setBadge(badge, "green");
-    statusEl.textContent = `running (mtime ${Math.round(status.age_seconds)}s ago)`;
   }
 
-  const initial = pf.initial_bankroll;
-  const bank = pf.bankroll;
-  const spent = (initial !== null && initial !== undefined && bank !== null && bank !== undefined)
-    ? Math.max(0, Number(initial) - Number(bank))
-    : null;
-
-  document.getElementById("claude-bankroll").textContent = fmtUsd(bank);
-  document.getElementById("claude-spent").textContent = (spent !== null) ? fmtUsd(spent) : "—";
-  document.getElementById("claude-pnl").innerHTML = fmtPnL(pf.total_realized_pnl);
-  document.getElementById("claude-trade-count").textContent = pf.total_trades ?? "—";
-
-  // Open positions
-  const positions = pf.positions || [];
-  document.getElementById("claude-positions").innerHTML = tableHtml(
-    [
-      { label: "Question", get: (p) => escapeHtml(String(p.question || "").slice(0, 50)) },
-      { label: "Side",     get: (p) => escapeHtml(p.side || "") },
-      { label: "Shares",   get: (p) => fmtNum(p.shares, 1), cls: () => "num" },
-      { label: "Entry",    get: (p) => fmtNum(p.entry_price, 3), cls: () => "num" },
-      { label: "Current",  get: (p) => fmtNum(p.current_price, 3), cls: () => "num" },
-      { label: "Unrealised", get: (p) => fmtPnL(p.unrealized_pnl), cls: () => "num" },
-    ],
-    positions,
-    "no open positions"
-  );
-
-  // Recent trades
-  const trades = await getJson("/api/claude/trades?limit=10");
-  document.getElementById("claude-trades").innerHTML = tableHtml(
-    [
-      { label: "Time",   get: (t) => fmtTime(t.timestamp) },
-      { label: "Action", get: (t) => escapeHtml(t.action || "") },
-      { label: "Side",   get: (t) => escapeHtml(t.side || "") },
-      { label: "Market", get: (t) => escapeHtml(String(t.question || "").slice(0, 35)) },
-      { label: "Size",   get: (t) => fmtUsd(t.size_usd), cls: () => "num" },
-      { label: "Price",  get: (t) => fmtNum(t.price, 3), cls: () => "num" },
-    ],
-    Array.isArray(trades) ? trades : [],
-    "no trades yet"
-  );
-
-  // Recent log
-  const log = await getJson("/api/claude/log?lines=30");
-  const logEl = document.getElementById("claude-log");
-  if (!Array.isArray(log) || log.length === 0) {
-    logEl.innerHTML = `<div class="empty">no log lines yet</div>`;
+  // Trades
+  const tradesDiv = document.getElementById("claude-trades");
+  if (!claudeTrades || claudeTrades.length === 0) {
+    tradesDiv.innerHTML = '<div class="empty">no trades yet</div>';
   } else {
-    logEl.innerHTML = log.map((e) => {
-      const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
-      const lvl = (e.level || "").toUpperCase();
-      const cls = (lvl === "ERROR" || lvl === "CRITICAL") ? "error" : (lvl === "WARNING") ? "warn" : "info";
-      const msg = e.message ?? e.raw ?? "";
-      return `<span class="line ${cls}"><span class="ts">${escapeHtml(t)}</span>  ${escapeHtml(lvl.padEnd(5))} ${escapeHtml(String(msg).slice(0, 240))}</span>`;
+    const recent = claudeTrades.slice(0, 10);
+    tradesDiv.innerHTML = `<table class="row-table"><tr><th>Time</th><th>Action</th><th>Side</th><th>Market</th><th>Size</th><th>Price</th><th>Result</th></tr>` +
+      recent.map(t => {
+        const act = (t.action || "").toUpperCase();
+        // Result column matches weather bot style: exit_reason + pnl for SELLs.
+        // BUYs (still open) show "open"; rows with neither show "—".
+        let resultText = "—";
+        if (act === "BUY") {
+          resultText = '<span class="mute">open</span>';
+        } else if (act === "SELL") {
+          const label = t.exit_reason || "sold";
+          const pnlPart = (t.pnl != null) ? ` ${fmtSigned(t.pnl)}` : "";
+          const pnlClass = (t.pnl != null && t.pnl > 0) ? "pos" : (t.pnl != null && t.pnl < 0) ? "neg" : "";
+          resultText = `${escapeHtml(label)}<span class="${pnlClass}">${pnlPart}</span>`;
+        }
+        return `
+        <tr>
+          <td>${new Date((t.timestamp || 0) * 1000).toLocaleTimeString()}</td>
+          <td>${act}</td>
+          <td>${t.side || ""}</td>
+          <td>${escapeHtml((t.question || "").slice(0, 40))}</td>
+          <td>${fmtUsd(t.size_usd, 2)}</td>
+          <td>${(t.price ?? 0).toFixed(3)}</td>
+          <td>${resultText}</td>
+        </tr>`;
+      }).join("") + `</table>`;
+  }
+
+  // Log
+  const logDiv = document.getElementById("claude-log");
+  if (!claudeLog || claudeLog.length === 0) {
+    logDiv.innerHTML = '<div class="empty">no log lines</div>';
+  } else {
+    const recent = claudeLog.slice(-25).reverse();
+    logDiv.innerHTML = recent.map(e => {
+      const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "?";
+      const lvl = (e.level || "info").toLowerCase();
+      const msg = e.message || e.raw || JSON.stringify(e);
+      return `<div class="log-line"><span class="ts">${ts}</span><span class="level ${lvl}">${e.level || "INFO"}</span>${escapeHtml(msg)}</div>`;
     }).join("");
-    logEl.scrollTop = logEl.scrollHeight;
   }
 }
 
-// ============================== refresh loop ==============================
+// ── Chart ──────────────────────────────────────────────────────────────
+async function renderChart() {
+  const [cs, ws] = await Promise.all([
+    fetchJSON(`/api/claude/snapshots?since=${currentRange}`),
+    fetchJSON(`/api/weather/snapshots?since=${currentRange}`)
+  ]);
 
-let timer = null;
+  const claudeRows = (cs?.snapshots) || [];
+  const weatherRows = (ws?.snapshots) || [];
 
-async function refreshAll() {
-  document.getElementById("last-refresh").textContent = new Date().toLocaleTimeString();
-  await Promise.allSettled([refreshWeather(), refreshClaude()]);
+  // Build combined timeline: each point = (ts, claude_value, weather_value)
+  // Use last-known-value carry-forward when one series doesn't have a sample at the other's ts.
+  const claudePoints = claudeRows.map(r => ({
+    x: r.ts * 1000,
+    y: (r.bankroll || 0) + (r.exposure || 0) + (r.unrealized_pnl || 0),
+  }));
+  const weatherPoints = weatherRows.map(r => ({
+    x: r.ts * 1000,
+    y: (r.bankroll || 0) + (r.exposure || 0),
+  }));
+
+  // For "all" mode, decide label format from actual data span (computed once
+  // here, not per-tick). < 24h of data → times; 1-60d → M/D; ≥ 60d → "May 2026".
+  let allModeFormat = "date";  // M/D
+  if (currentRange === "all") {
+    const allX = [...claudePoints, ...weatherPoints].map(p => p.x);
+    if (allX.length === 0) {
+      allModeFormat = "date";
+    } else {
+      const spanDays = (Math.max(...allX) - Math.min(...allX)) / 86400000;
+      if (spanDays < 1)      allModeFormat = "time";
+      else if (spanDays < 60) allModeFormat = "date";
+      else                    allModeFormat = "month";
+    }
+  }
+
+  if (pnlChart) pnlChart.destroy();
+
+  const ctx = document.getElementById("pnl-chart").getContext("2d");
+  pnlChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      datasets: [
+        {
+          label: "Claude Bot",
+          data: claudePoints,
+          borderColor: "#d2a8ff",
+          backgroundColor: "rgba(210,168,255,0.25)",
+          fill: "origin",
+          tension: 0.2,
+          pointRadius: 0,
+          borderWidth: 1.5,
+        },
+        {
+          label: "Weather Bot",
+          data: weatherPoints,
+          borderColor: "#58a6ff",
+          backgroundColor: "rgba(88,166,255,0.18)",
+          fill: "origin",
+          tension: 0.2,
+          pointRadius: 0,
+          borderWidth: 1.5,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: "#e6edf3", font: { size: 11 } } },
+        tooltip: { mode: "nearest", intersect: false },
+      },
+      scales: {
+        x: {
+          type: "linear",
+          // Force the axis to span the full selected range so the user always
+          // sees a 24h / 7d / all-time window regardless of how much data has
+          // been collected yet. Without this, Chart.js auto-fits the axis to
+          // the actual data range and the "7d" toggle silently shows ~28h.
+          min: currentRange === "24h" ? Date.now() - 86400000
+              : currentRange === "7d"  ? Date.now() - 7 * 86400000
+              : undefined,  // "all" → let the chart auto-fit
+          max: (currentRange === "24h" || currentRange === "7d") ? Date.now() : undefined,
+          ticks: {
+            color: "#8b949e", font: { size: 10 },
+            callback: (v) => {
+              const d = new Date(v);
+              // 24h view → HH:MM
+              if (currentRange === "24h") {
+                return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              }
+              // 7d view → MM/DD (always show date, even for recent points)
+              if (currentRange === "7d") {
+                return d.toLocaleDateString([], { month: "numeric", day: "numeric" });
+              }
+              // "all" → format chosen from total data span (computed above)
+              if (allModeFormat === "time") {
+                return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              }
+              if (allModeFormat === "month") {
+                return d.toLocaleDateString([], { month: "short", year: "numeric" });
+              }
+              return d.toLocaleDateString([], { month: "numeric", day: "numeric" });
+            },
+          },
+          grid: { color: "rgba(110,118,129,0.1)" },
+        },
+        y: {
+          ticks: {
+            color: "#8b949e", font: { size: 10 },
+            callback: (v) => `$${Math.round(v).toLocaleString()}`,
+          },
+          grid: { color: "rgba(110,118,129,0.1)" },
+        },
+      },
+      interaction: { mode: "index", intersect: false },
+    },
+  });
 }
 
-function startTimer() {
-  stopTimer();
-  timer = setInterval(refreshAll, 30000);
-}
-function stopTimer() {
-  if (timer) { clearInterval(timer); timer = null; }
+// ── escaping ───────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
 }
 
-document.getElementById("refresh-btn").addEventListener("click", refreshAll);
-document.getElementById("auto").addEventListener("change", (e) => {
-  if (e.target.checked) startTimer();
-  else stopTimer();
+// ── main refresh loop ──────────────────────────────────────────────────
+async function refresh() {
+  const [
+    claudePortfolio,
+    claudePositionsResp,
+    claudeTrades,
+    claudeLog,
+    claudeStatus,
+    weatherStats,
+    weatherTrades,
+    weatherEvents,
+    weatherPositionsResp,
+  ] = await Promise.all([
+    fetchJSON("/api/claude/portfolio"),
+    fetchJSON("/api/claude/positions-detail"),
+    fetchJSON("/api/claude/trades?limit=20"),
+    fetchJSON("/api/claude/log?lines=80"),
+    fetchJSON("/api/claude/status"),
+    fetchJSON("/api/weather/stats"),
+    fetchJSON("/api/weather/trades?limit=50"),
+    fetchJSON("/api/weather/events?limit=40"),
+    fetchJSON("/api/weather/positions-detail"),
+  ]);
+
+  const claudePositions = (claudePositionsResp?.positions) || claudePortfolio?.positions || [];
+  const weatherPositions = (weatherPositionsResp?.positions) || null;
+
+  renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions);
+  renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions);
+  renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog, claudeStatus);
+  await renderChart();
+
+  document.getElementById("refresh-ts").textContent = fmtRefreshTs(new Date());
+}
+
+// ── event wiring ───────────────────────────────────────────────────────
+document.getElementById("refresh-now").addEventListener("click", refresh);
+document.querySelectorAll(".range-buttons button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".range-buttons button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentRange = btn.dataset.range;
+    renderChart();
+  });
 });
 
-refreshAll();
-startTimer();
+let autoRefreshInterval = null;
+function setAutoRefresh(on) {
+  if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+  autoRefreshInterval = on ? setInterval(refresh, 30000) : null;
+}
+document.getElementById("autorefresh").addEventListener("change", (e) => setAutoRefresh(e.target.checked));
+setAutoRefresh(true);
+
+refresh();
 </script>
 </body>
 </html>

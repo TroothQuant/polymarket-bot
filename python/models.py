@@ -81,6 +81,7 @@ class Position:
     opened_at: float = field(default_factory=time.time)
     order_id: Optional[str] = None
     fair_estimate_at_entry: float = 0.0  # Original Claude estimate (0 = unknown/legacy)
+    end_date: str = ""  # ISO 8601 market resolution time from Gamma. "" = unknown (legacy).
 
 
 @dataclass
@@ -135,3 +136,10 @@ class PortfolioSnapshot:
     total_trades: int
     is_halted: bool
     last_updated: float = field(default_factory=time.time)
+    # Persistent risk-control state (added 2026-05-20 per audit HIGH #20).
+    # Without these two fields, the wash-trade cooldown and API budget guard
+    # were silently reset on every restart -- meaning the bot could
+    # immediately re-buy a position it had just closed at a loss, and the
+    # daily/cumulative API budget gate became useless across restarts.
+    recently_closed: dict = field(default_factory=dict)  # condition_id -> unix close time
+    total_api_cost: float = 0.0
