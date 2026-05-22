@@ -180,6 +180,15 @@
   }
   .platform-badge.polymarket { background: rgba(22,82,240,0.18); color: #6c93ff; }
   .platform-badge.kalshi { background: rgba(0,179,164,0.18); color: #4cd6c1; }
+  /* Position-state badges (added 2026-05-21) */
+  .state-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; font-family: var(--mono); margin-left: 6px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .state-badge.state-live  { background: rgba(63,185,80,0.18);  color: var(--green); }
+  .state-badge.state-stale { background: rgba(244,180,0,0.22);  color: #f0c150; }
+  .state-badge.state-stuck { background: rgba(248,81,73,0.22);  color: var(--red); }
   .pos-card .row {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
     margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
@@ -530,16 +539,37 @@ function renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositi
       const platform = (t.platform || "polymarket").toLowerCase();
       const platformBadge = `<span class="platform-badge ${platform}">${platform}</span>`;
 
+      // Position-state badge (added 2026-05-21 — surfaces stuck positions
+      // like trade #9 which sat open 4 days because the market got archived
+      // by Polymarket without resolving).
+      //   live     — opened < 2 days ago, mark is fresh
+      //   stale    — open 2-4 days, OR current_price unavailable (mark fetch failing)
+      //   stuck    — open > 4 days, almost certainly needs operator intervention
+      let stateBadge = '';
+      if (t.timestamp) {
+        const ageHours = (Date.now() - new Date(t.timestamp).getTime()) / 3600000;
+        const markMissing = (curr == null);
+        let stateClass = 'state-live';
+        let stateText = 'live';
+        if (ageHours > 96) { stateClass = 'state-stuck'; stateText = 'stuck'; }
+        else if (ageHours > 48 || markMissing) { stateClass = 'state-stale'; stateText = markMissing ? 'no mark' : 'stale'; }
+        stateBadge = `<span class="state-badge ${stateClass}">${stateText}</span>`;
+      }
+
+      const openedDisplay = t.timestamp
+        ? `${new Date(t.timestamp).toLocaleString()} <span class="mute">(${fmtDuration((Date.now() - new Date(t.timestamp).getTime())/1000)} ago)</span>`
+        : '—';
+
       return `
         <div class="${cardClass}">
-          <div class="pos-question"><span class="side-badge ${sideLabel}">${sideLabel}</span>${escapeHtml(t.event_slug || "?")}${platformBadge}</div>
+          <div class="pos-question"><span class="side-badge ${sideLabel}">${sideLabel}</span>${escapeHtml(t.event_slug || "?")}${platformBadge}${stateBadge}</div>
           <div class="row">
             <div><div class="lbl">Entry → Now</div><div class="v">${entryToNow}</div></div>
             <div><div class="lbl">Size</div><div class="v">${fmtUsd(sizeUsd, 0)}</div></div>
             <div><div class="lbl">Unrealized</div><div class="v">${unrealizedDisplay}</div></div>
           </div>
           <div class="meta-row">
-            <div class="item"><span class="lbl">Opened</span>${t.timestamp ? new Date(t.timestamp).toLocaleString() : "—"}</div>
+            <div class="item"><span class="lbl">Opened</span>${openedDisplay}</div>
             <div class="item"><span class="lbl">Settles</span><span class="${cdClass}" data-end-ms="${endMs || ''}">${remaining !== null ? fmtCountdown(remaining) : "unknown"}</span></div>
             <div class="item"><span class="lbl">Edge at entry</span>${edgeDisplay}</div>
           </div>
