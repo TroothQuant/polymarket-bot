@@ -56,7 +56,10 @@ class PaperTrader:
 
     def execute_sell(self, exit_signal: ExitSignal, portfolio: Portfolio) -> Optional[Trade]:
         pos = exit_signal.position
-        pnl = portfolio.close_position(pos.condition_id, exit_signal.current_price)
+        pnl = portfolio.close_position(
+            pos.condition_id, exit_signal.current_price,
+            exit_reason=exit_signal.exit_reason,
+        )
 
         return Trade(
             trade_id=str(uuid4()),
@@ -339,7 +342,9 @@ class LiveTrader:
             return None
 
         # Close position in portfolio (returns capital + PnL to bankroll)
-        pnl = portfolio.close_position(pos.condition_id, price)
+        pnl = portfolio.close_position(
+            pos.condition_id, price, exit_reason=exit_signal.exit_reason
+        )
         log.info(f"SOLD: {pos.question[:40]}... PnL=${pnl:+.2f} ({exit_signal.exit_reason})")
 
         return Trade(
@@ -466,7 +471,9 @@ class LiveTrader:
             return None
 
         # Both orders filled — close position
-        pnl = portfolio.close_position(pos.condition_id, price)
+        pnl = portfolio.close_position(
+            pos.condition_id, price, exit_reason=candidate.exit_reason
+        )
         log.info(f"TOPUP+SELL complete: {pos.question[:40]}... PnL=${pnl:+.2f} ({candidate.exit_reason})")
 
         return Trade(

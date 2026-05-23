@@ -29,6 +29,11 @@ class Portfolio:
             # Audit 2026-05-19 HIGH #20: restore persistent risk-control state.
             self._recently_closed = dict(getattr(snapshot, "recently_closed", {}) or {})
             self.total_api_cost = float(getattr(snapshot, "total_api_cost", 0.0) or 0.0)
+            # Per-condition stop-loss streak (added 2026-05-23).
+            self._stop_streak_by_cid: dict[str, list[float]] = {
+                cid: [float(t) for t in (times or [])]
+                for cid, times in (getattr(snapshot, "stop_streak_by_cid", {}) or {}).items()
+            }
         else:
             self.bankroll = config.initial_bankroll
             self.initial_bankroll = config.initial_bankroll
@@ -40,6 +45,7 @@ class Portfolio:
             self.is_halted = False
             self._recently_closed: dict[str, float] = {}
             self.total_api_cost = 0.0
+            self._stop_streak_by_cid: dict[str, list[float]] = {}
 
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -54,6 +60,10 @@ class Portfolio:
             # Audit 2026-05-19 HIGH #20: persist risk-control state.
             recently_closed=dict(self._recently_closed),
             total_api_cost=self.total_api_cost,
+            # Per-condition stop-loss streak (added 2026-05-23).
+            stop_streak_by_cid={
+                cid: list(times) for cid, times in self._stop_streak_by_cid.items()
+            },
         )
 
     def total_exposure(self) -> float:
@@ -64,6 +74,45 @@ class Portfolio:
 
     def has_position(self, condition_id: str) -> bool:
         return any(p.condition_id == condition_id for p in self.positions)
+
+    # ── Per-condition stop-loss circuit breaker (added 2026-05-23) ─────
+    # Closes the "model is wrong but conviction is stable" failure mode:
+    # bot stops out, ~20-min cooldown expires, model re-evaluates the same
+    # market with the same conviction, bot re-buys, market drifts further,
+    # stop fires again. Observed 5× on Iran NO positions on 2026-05-23
+    # alone (Jun 30 × 3, May 31 × 2). The fix counts stop-losses per
+    # condition_id within a rolling window and refuses new buys once the
+    # threshold is hit; the streak clears on take_profit / resolved win.
+
+    def _prune_stop_streak(self, condition_id: str) -> list[float]:
+        """Return the in-window stop timestamps for `condition_id`, pruning
+        the persisted list to drop entries older than the window."""
+        window_secs = self.config.stop_pause_window_hours * 3600.0
+        cutoff = time.time() - window_secs
+        times = [t for t in self._stop_streak_by_cid.get(condition_id, []) if t >= cutoff]
+        if times:
+            self._stop_streak_by_cid[condition_id] = times
+        else:
+            self._stop_streak_by_cid.pop(condition_id, None)
+        return times
+
+    def _record_stop_loss(self, condition_id: str) -> None:
+        """Append `now` to the stop streak for `condition_id`."""
+        times = self._prune_stop_streak(condition_id)
+        times.append(time.time())
+        self._stop_streak_by_cid[condition_id] = times
+
+    def _clear_stop_streak(self, condition_id: str) -> None:
+        """Drop the stop streak for `condition_id` (called on take_profit /
+        resolved-win — the eventual payoff invalidates the streak)."""
+        self._stop_streak_by_cid.pop(condition_id, None)
+
+    def _is_in_stop_pause(self, condition_id: str) -> tuple[bool, int, float]:
+        """Return (paused, n_stops_in_window, oldest_timestamp_in_window)."""
+        times = self._prune_stop_streak(condition_id)
+        if not times:
+            return (False, 0, 0.0)
+        return (len(times) >= self.config.stop_pause_threshold, len(times), times[0])
 
     # ── Signal generation ─────────────────────────────────────────────
 
@@ -160,6 +209,21 @@ class Portfolio:
             else:
                 del self._recently_closed[signal.market.condition_id]
 
+        # Per-condition stop-loss circuit breaker (2026-05-23). After the
+        # 20-min cooldown expires, the model has often reformed the same
+        # conviction on a market that's already burned us — block re-buys
+        # until enough stops fall out of the rolling window.
+        paused, n_stops, oldest_ts = self._is_in_stop_pause(signal.market.condition_id)
+        if paused:
+            window_secs = self.config.stop_pause_window_hours * 3600.0
+            resumes_in_h = max(0.0, (oldest_ts + window_secs - time.time()) / 3600.0)
+            log.info(
+                f"Risk BLOCK: {signal.market.question[:40]}... in stop-pause "
+                f"({n_stops} stops in last {self.config.stop_pause_window_hours:.0f}h; "
+                f"resumes in {resumes_in_h:.1f}h)"
+            )
+            return False
+
         if len(self.positions) >= self.config.max_concurrent_positions:
             log.info(f"Risk BLOCK: max positions ({self.config.max_concurrent_positions}) reached")
             return False
@@ -215,8 +279,14 @@ class Portfolio:
             f"${position.size_usd:.2f} @ {position.entry_price:.3f}"
         )
 
-    def close_position(self, condition_id: str, exit_price: float) -> float:
-        """Close position, return cost basis + PnL to bankroll. Returns realized PnL."""
+    def close_position(self, condition_id: str, exit_price: float,
+                       exit_reason: Optional[str] = None) -> float:
+        """Close position, return cost basis + PnL to bankroll. Returns realized PnL.
+
+        `exit_reason` (added 2026-05-23) feeds the per-condition stop-loss
+        circuit breaker: 'stop_loss' increments the streak, any take_profit
+        variant (or resolved win) clears it. None preserves legacy behavior.
+        """
         pos = next((p for p in self.positions if p.condition_id == condition_id), None)
         if pos is None:
             return 0.0
@@ -228,7 +298,14 @@ class Portfolio:
         self._recently_closed[condition_id] = time.time()
         self.high_water_mark = max(self.high_water_mark, self.bankroll)
 
-        log.info(f"Closed {pos.question[:40]}... PnL: ${pnl:+.2f}")
+        # Per-condition stop-loss streak bookkeeping.
+        if exit_reason == "stop_loss":
+            self._record_stop_loss(condition_id)
+        elif exit_reason and ("take_profit" in exit_reason):
+            self._clear_stop_streak(condition_id)
+
+        log.info(f"Closed {pos.question[:40]}... PnL: ${pnl:+.2f}"
+                 + (f" [{exit_reason}]" if exit_reason else ""))
         return pnl
 
     def resolve_position(self, condition_id: str, won: bool) -> float:
@@ -246,6 +323,14 @@ class Portfolio:
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         self._recently_closed[condition_id] = time.time()
         self.high_water_mark = max(self.high_water_mark, self.bankroll)
+
+        # Resolution outcome feeds the stop-loss streak: a won market
+        # invalidates any prior streak (the model was right after all);
+        # a lost market reinforces it (treat as a "stop" at settlement).
+        if won:
+            self._clear_stop_streak(condition_id)
+        else:
+            self._record_stop_loss(condition_id)
 
         result = "WON" if won else "LOST"
         log.info(f"Resolved ({result}): {pos.question[:40]}... payout=${payout:.2f}, PnL=${pnl:+.2f}")
@@ -482,6 +567,9 @@ class Portfolio:
         pnl = -pos.size_usd
         self.total_realized_pnl += pnl
         self._recently_closed[condition_id] = time.time()
+        # Ghost = stake written off; counts toward the stop-loss streak so
+        # the bot doesn't immediately re-open on the same condition_id.
+        self._record_stop_loss(condition_id)
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         log.warning(
             f"Ghost removed: {pos.question[:40]}... "

@@ -70,6 +70,11 @@ def save_snapshot(snapshot: PortfolioSnapshot, data_dir: str) -> None:
         # Audit 2026-05-19 HIGH #20: persist wash-trade cooldown and API budget.
         "recently_closed": dict(getattr(snapshot, "recently_closed", {}) or {}),
         "total_api_cost": float(getattr(snapshot, "total_api_cost", 0.0) or 0.0),
+        # Per-condition stop-loss streak (added 2026-05-23).
+        "stop_streak_by_cid": {
+            cid: list(times) for cid, times in
+            (getattr(snapshot, "stop_streak_by_cid", {}) or {}).items()
+        },
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -99,6 +104,13 @@ def load_snapshot(data_dir: str) -> Optional[PortfolioSnapshot]:
         # default to empty / zero, matching the pre-patch in-memory init.
         recently_closed=dict(data.get("recently_closed", {}) or {}),
         total_api_cost=float(data.get("total_api_cost", 0.0) or 0.0),
+        # Per-condition stop-loss streak (added 2026-05-23). Legacy snapshots
+        # without this key load as empty (no markets are paused on first run
+        # after the upgrade).
+        stop_streak_by_cid={
+            cid: [float(t) for t in (times or [])]
+            for cid, times in (data.get("stop_streak_by_cid", {}) or {}).items()
+        },
     )
 
 

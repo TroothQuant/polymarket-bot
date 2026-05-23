@@ -143,3 +143,7 @@ class PortfolioSnapshot:
     # daily/cumulative API budget gate became useless across restarts.
     recently_closed: dict = field(default_factory=dict)  # condition_id -> unix close time
     total_api_cost: float = 0.0
+    # Per-condition stop-loss streak (added 2026-05-23). Maps condition_id to
+    # a list of unix timestamps of stop_loss exits. Used by Portfolio.check_risk
+    # to refuse new buys on markets the bot has repeatedly mis-called.
+    stop_streak_by_cid: dict = field(default_factory=dict)

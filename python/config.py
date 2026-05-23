@@ -103,6 +103,18 @@ class BotConfig:
     review_reestimate_threshold_pct: float = 0.10
     review_ensemble_size: int = 3
 
+    # Per-condition stop-loss circuit breaker (added 2026-05-23 after the
+    # Iran NO bleed pattern: bot took 5 stop-losses on Iran peace-deal NO
+    # positions in a single day — Jun 30 NO three separate times, May 31 NO
+    # twice — each cycle running through the 20-min cooldown then re-buying
+    # because the model's conviction was stable while the market kept
+    # drifting against the position). If a condition_id stops out
+    # >= stop_pause_threshold times within a rolling stop_pause_window_hours
+    # window, refuse new buys on that market until the oldest qualifying
+    # stop falls out of the window. Cleared on take_profit / resolved win.
+    stop_pause_threshold: int = 2
+    stop_pause_window_hours: float = 24.0
+
     # Phased (bankroll-aware) exits
     #
     # The bot's behavior should adapt to portfolio size. At small bankroll, capital
@@ -232,6 +244,8 @@ class BotConfig:
             exit_edge_buffer=get("exit_edge_buffer", 0.05),
             review_reestimate_threshold_pct=get("review_reestimate_threshold_pct", 0.10),
             review_ensemble_size=get("review_ensemble_size", 3),
+            stop_pause_threshold=get("stop_pause_threshold", 2),
+            stop_pause_window_hours=get("stop_pause_window_hours", 24.0),
             enable_phased_exits=get("enable_phased_exits", True),
             phase1_threshold=get("phase1_threshold", 1000.0),
             phase2_threshold=get("phase2_threshold", 5000.0),
