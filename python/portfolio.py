@@ -34,6 +34,11 @@ class Portfolio:
                 cid: [float(t) for t in (times or [])]
                 for cid, times in (getattr(snapshot, "stop_streak_by_cid", {}) or {}).items()
             }
+            # Fixed-pause blocklist (added 2026-05-23 PM).
+            self._blocklisted_until: dict[str, float] = {
+                cid: float(t) for cid, t in
+                (getattr(snapshot, "blocklisted_until", {}) or {}).items()
+            }
         else:
             self.bankroll = config.initial_bankroll
             self.initial_bankroll = config.initial_bankroll
@@ -46,6 +51,7 @@ class Portfolio:
             self._recently_closed: dict[str, float] = {}
             self.total_api_cost = 0.0
             self._stop_streak_by_cid: dict[str, list[float]] = {}
+            self._blocklisted_until: dict[str, float] = {}
 
     def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -64,6 +70,8 @@ class Portfolio:
             stop_streak_by_cid={
                 cid: list(times) for cid, times in self._stop_streak_by_cid.items()
             },
+            # Fixed-pause blocklist (added 2026-05-23 PM).
+            blocklisted_until=dict(self._blocklisted_until),
         )
 
     def total_exposure(self) -> float:
@@ -97,22 +105,48 @@ class Portfolio:
         return times
 
     def _record_stop_loss(self, condition_id: str) -> None:
-        """Append `now` to the stop streak for `condition_id`."""
+        """Append `now` to the stop streak. When the streak hits threshold,
+        set an explicit blocklist expiry at now + stop_pause_extra_hours.
+        Cowork 2026-05-23: the fixed-pause shape is the right protection
+        against the perpetual-12h-trigger loop that natural window-aging
+        leaves open."""
+        now = time.time()
         times = self._prune_stop_streak(condition_id)
-        times.append(time.time())
+        times.append(now)
         self._stop_streak_by_cid[condition_id] = times
+        if len(times) >= self.config.stop_pause_threshold:
+            pause_secs = self.config.stop_pause_extra_hours * 3600.0
+            self._blocklisted_until[condition_id] = now + pause_secs
+            log.warning(
+                f"CIRCUIT BREAKER: {condition_id[:14]}... blocklisted for "
+                f"{self.config.stop_pause_extra_hours:.0f}h after "
+                f"{len(times)} stops in "
+                f"{self.config.stop_pause_window_hours:.0f}h"
+            )
 
     def _clear_stop_streak(self, condition_id: str) -> None:
-        """Drop the stop streak for `condition_id` (called on take_profit /
-        resolved-win — the eventual payoff invalidates the streak)."""
+        """Drop the stop streak AND any active blocklist for `condition_id`
+        (called on take_profit / resolved-win — the eventual payoff
+        invalidates both)."""
         self._stop_streak_by_cid.pop(condition_id, None)
+        self._blocklisted_until.pop(condition_id, None)
 
-    def _is_in_stop_pause(self, condition_id: str) -> tuple[bool, int, float]:
-        """Return (paused, n_stops_in_window, oldest_timestamp_in_window)."""
-        times = self._prune_stop_streak(condition_id)
-        if not times:
-            return (False, 0, 0.0)
-        return (len(times) >= self.config.stop_pause_threshold, len(times), times[0])
+    def _is_in_stop_pause(self, condition_id: str) -> tuple[bool, str, float]:
+        """Return (paused, reason, resumes_at_unix_ts).
+
+        Lazy-cleanup semantics: if an active blocklist has expired, both
+        the blocklist entry and the underlying stop streak are cleared so
+        the next stop on this market starts fresh.
+        """
+        now = time.time()
+        expires_at = self._blocklisted_until.get(condition_id)
+        if expires_at is not None:
+            if now < expires_at:
+                return (True, "blocklisted", expires_at)
+            # Expired — clear blocklist and history together.
+            del self._blocklisted_until[condition_id]
+            self._stop_streak_by_cid.pop(condition_id, None)
+        return (False, "", 0.0)
 
     # ── Signal generation ─────────────────────────────────────────────
 
@@ -211,16 +245,17 @@ class Portfolio:
 
         # Per-condition stop-loss circuit breaker (2026-05-23). After the
         # 20-min cooldown expires, the model has often reformed the same
-        # conviction on a market that's already burned us — block re-buys
-        # until enough stops fall out of the rolling window.
-        paused, n_stops, oldest_ts = self._is_in_stop_pause(signal.market.condition_id)
+        # conviction on a market that's already burned us — when the
+        # circuit-breaker fires (>= stop_pause_threshold stops in
+        # stop_pause_window_hours), the market is blocklisted for a
+        # fixed stop_pause_extra_hours regardless of when the next stop
+        # would have aged out.
+        paused, _reason, resumes_at = self._is_in_stop_pause(signal.market.condition_id)
         if paused:
-            window_secs = self.config.stop_pause_window_hours * 3600.0
-            resumes_in_h = max(0.0, (oldest_ts + window_secs - time.time()) / 3600.0)
+            resumes_in_h = max(0.0, (resumes_at - time.time()) / 3600.0)
             log.info(
-                f"Risk BLOCK: {signal.market.question[:40]}... in stop-pause "
-                f"({n_stops} stops in last {self.config.stop_pause_window_hours:.0f}h; "
-                f"resumes in {resumes_in_h:.1f}h)"
+                f"Risk BLOCK: circuit-breaker on {signal.market.question[:40]}... "
+                f"(resumes in {resumes_in_h:.1f}h)"
             )
             return False
 
@@ -567,9 +602,11 @@ class Portfolio:
         pnl = -pos.size_usd
         self.total_realized_pnl += pnl
         self._recently_closed[condition_id] = time.time()
-        # Ghost = stake written off; counts toward the stop-loss streak so
-        # the bot doesn't immediately re-open on the same condition_id.
-        self._record_stop_loss(condition_id)
+        # NOTE (2026-05-23 PM, per Cowork review): ghost removal does NOT
+        # count toward the stop-loss streak. A ghost is an on-chain
+        # accounting divergence (we thought we had the position but the
+        # USDC/conditional-token balance disagrees), not a model error.
+        # Conflating the two would pollute the circuit-breaker signal.
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         log.warning(
             f"Ghost removed: {pos.question[:40]}... "

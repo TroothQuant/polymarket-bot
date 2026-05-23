@@ -75,6 +75,8 @@ def save_snapshot(snapshot: PortfolioSnapshot, data_dir: str) -> None:
             cid: list(times) for cid, times in
             (getattr(snapshot, "stop_streak_by_cid", {}) or {}).items()
         },
+        # Fixed-pause blocklist (added 2026-05-23 PM).
+        "blocklisted_until": dict(getattr(snapshot, "blocklisted_until", {}) or {}),
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -110,6 +112,11 @@ def load_snapshot(data_dir: str) -> Optional[PortfolioSnapshot]:
         stop_streak_by_cid={
             cid: [float(t) for t in (times or [])]
             for cid, times in (data.get("stop_streak_by_cid", {}) or {}).items()
+        },
+        # Fixed-pause blocklist (added 2026-05-23 PM).
+        blocklisted_until={
+            cid: float(t) for cid, t in
+            (data.get("blocklisted_until", {}) or {}).items()
         },
     )
 

@@ -147,3 +147,8 @@ class PortfolioSnapshot:
     # a list of unix timestamps of stop_loss exits. Used by Portfolio.check_risk
     # to refuse new buys on markets the bot has repeatedly mis-called.
     stop_streak_by_cid: dict = field(default_factory=dict)
+    # Explicit blocklist expiry (added 2026-05-23 PM). Maps condition_id to
+    # unix time at which the fixed-pause block lifts. Populated when the
+    # streak trips threshold inside _record_stop_loss; cleared lazily on
+    # read once now() >= the stored expiry.
+    blocklisted_until: dict = field(default_factory=dict)

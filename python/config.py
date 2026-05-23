@@ -108,12 +108,22 @@ class BotConfig:
     # positions in a single day — Jun 30 NO three separate times, May 31 NO
     # twice — each cycle running through the 20-min cooldown then re-buying
     # because the model's conviction was stable while the market kept
-    # drifting against the position). If a condition_id stops out
+    # drifting against the position). When a condition_id stops out
     # >= stop_pause_threshold times within a rolling stop_pause_window_hours
-    # window, refuse new buys on that market until the oldest qualifying
-    # stop falls out of the window. Cleared on take_profit / resolved win.
+    # window, the market is blocklisted for a fixed stop_pause_extra_hours.
+    # Cleared on take_profit / resolved win.
+    #
+    # Refined 2026-05-23 (PM): the original implementation relied on natural
+    # window aging — block lifted when the oldest qualifying stop fell out
+    # of the window, so duration varied with the gap between stops (two
+    # stops 23h apart → 1h block; two stops 1h apart → 23h block). A
+    # market that stops every ~12h could perpetually trigger short blocks
+    # and re-trigger immediately. Fixed-pause shape forecloses that loop:
+    # at trip time, blocklisted_until = now + stop_pause_extra_hours,
+    # cleared explicitly when expired.
     stop_pause_threshold: int = 2
     stop_pause_window_hours: float = 24.0
+    stop_pause_extra_hours: float = 48.0
 
     # Phased (bankroll-aware) exits
     #
@@ -246,6 +256,7 @@ class BotConfig:
             review_ensemble_size=get("review_ensemble_size", 3),
             stop_pause_threshold=get("stop_pause_threshold", 2),
             stop_pause_window_hours=get("stop_pause_window_hours", 24.0),
+            stop_pause_extra_hours=get("stop_pause_extra_hours", 48.0),
             enable_phased_exits=get("enable_phased_exits", True),
             phase1_threshold=get("phase1_threshold", 1000.0),
             phase2_threshold=get("phase2_threshold", 5000.0),
