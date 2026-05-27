@@ -583,17 +583,23 @@ function renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositi
   if (!weatherTrades || weatherTrades.length === 0) {
     tradesDiv.innerHTML = '<div class="empty">no trades yet</div>';
   } else {
-    const recent = weatherTrades.slice(-10).reverse();
-    tradesDiv.innerHTML = `<table class="row-table"><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Price</th><th>Result</th></tr>` +
+    // API returns newest-first; take the first 10, no reverse.
+    const recent = weatherTrades.slice(0, 10);
+    tradesDiv.innerHTML = `<table class="row-table"><tr><th>#</th><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Price</th><th>Edge</th><th>Result</th></tr>` +
       recent.map(t => {
         const platform = (t.platform || "polymarket").toLowerCase();
+        const edgeDisplay = (t.edge_at_entry != null)
+          ? (t.edge_at_entry * 100).toFixed(1) + "%"
+          : "—";
         return `
         <tr>
+          <td>${t.id ?? "—"}</td>
           <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
           <td>${escapeHtml((t.event_slug || "?").slice(0, 40))}<span class="platform-badge ${platform}">${platform}</span></td>
           <td>${(t.direction || "").toUpperCase()}</td>
           <td>${fmtUsd(t.size, 0)}</td>
           <td>${(t.entry_price ?? 0).toFixed(3)}</td>
+          <td>${edgeDisplay}</td>
           <td>${t.result || "pending"} ${t.pnl != null ? fmtSigned(t.pnl) : ""}</td>
         </tr>`;
       }).join("") + `</table>`;
@@ -690,9 +696,12 @@ function renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog,
     tradesDiv.innerHTML = '<div class="empty">no trades yet</div>';
   } else {
     const recent = claudeTrades.slice(0, 10);
-    tradesDiv.innerHTML = `<table class="row-table"><tr><th>Time</th><th>Action</th><th>Side</th><th>Market</th><th>Size</th><th>Price</th><th>Result</th></tr>` +
+    tradesDiv.innerHTML = `<table class="row-table"><tr><th>Time</th><th>Action</th><th>Side</th><th>Market</th><th>Size</th><th>Price</th><th>Edge</th><th>Result</th></tr>` +
       recent.map(t => {
         const act = (t.action || "").toUpperCase();
+        const edgeDisplay = (t.edge_at_entry != null)
+          ? (t.edge_at_entry * 100).toFixed(1) + "%"
+          : "—";
         // Result column matches weather bot style: exit_reason + pnl for SELLs.
         // BUYs (still open) show "open"; rows with neither show "—".
         let resultText = "—";
@@ -712,6 +721,7 @@ function renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog,
           <td>${escapeHtml((t.question || "").slice(0, 40))}</td>
           <td>${fmtUsd(t.size_usd, 2)}</td>
           <td>${(t.price ?? 0).toFixed(3)}</td>
+          <td>${edgeDisplay}</td>
           <td>${resultText}</td>
         </tr>`;
       }).join("") + `</table>`;
