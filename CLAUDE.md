@@ -1,3 +1,9 @@
+# Polymarket project navigation
+
+Before any work that touches files in `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/`, read `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/NAVIGATION.md` first. It documents the folder structure, the file-naming convention (`<type>_<YYYY-MM-DD>.md`, no `NN_` prefix on dated files), and where new files belong. Skipping this step is the failure mode that creates duplicate-prefix and orphan-file drift.
+
+---
+
 # Operating Principles (READ FIRST — overrides everything else in this file)
 
 These two rules govern every session. They override conflicting guidance below.
@@ -68,6 +74,43 @@ Phase-aware time-to-resolution filter (added `python/main.py` + `config.py`):
 
 API key lives in `polymarket_bot_config.json` (NOT in shell env) so it survives terminal closes. The `anthropic_api_key` field is loaded by `config.py::from_env()` and used regardless of process env vars.
 
+## Operational state (added 2026-05-23)
+
+### Per-condition_id stop-loss circuit breaker (commit `cc5ff09`)
+
+Addresses the 2026-05-23 Iran NO thrash pattern: 5 stop-losses in 24h across Iran May 26 / May 31 / Jun 30 peace-deal contracts. Market drifted decisively (Jun 30 NO: 0.665 → 0.305 in 8 days) — news the model can't see. Cooldown was working as designed (20 min), then re-entry, then stop, repeat. Bled ~$25 realized.
+
+**Config knobs** (in `polymarket_bot_config.json` + `config.py` defaults, "Position review / exit" cluster):
+- `stop_pause_threshold: 2` — N stops within window before the block fires.
+- `stop_pause_window_hours: 24.0` — sliding window for streak counting.
+- `stop_pause_extra_hours: 48.0` — fixed pause AFTER the trigger fires (regardless of timing). Closes the loop where two stops 23h apart would otherwise produce only a 1h block.
+
+**Persistent state** (in `PortfolioSnapshot`, mirrors the audit-#20 `recently_closed` pattern at commit `97b8ac5`):
+- `stop_streak_by_cid: dict[str, list[float]]` — condition_id → [unix timestamps of stops].
+- `blocklisted_until: dict[str, float]` — condition_id → unix expiry time.
+
+Both fields survive restart (read in `persistence.load_snapshot`, written in `persistence.save_snapshot`).
+
+**Exit-reason propagation**: `close_position(condition_id, exit_price, exit_reason=None)` now takes the exit reason. Three call sites updated in `trader.py` (PaperTrader.execute_sell, LiveTrader.execute_sell, LiveTrader.execute_topup_and_sell). Only `exit_reason == "stop_loss"` increments the streak.
+
+**Bypass paths** (do NOT increment the streak):
+- `operator_close` — new exit reason for manual operator-driven closes. Used by `scripts/close_iran_no_2026-05-23.py`.
+- `ghost` — accounting cleanup via `remove_ghost_position`, not a model error.
+- `resolved_won` / `resolved_lost` — go through `resolve_position`, not `close_position`. Logged but inert (no re-entry possible after resolution).
+
+**Test coverage**: 6-test suite (trip, re-trip, monkeypatched expiry, take_profit invalidation, persistence round-trip, lazy-expire cleanup). All passing as of `cc5ff09`.
+
+**Operating note**: the circuit breaker is ADDITIVE — same trades go through as before; only the third buy-back inside the threshold window is blocked. It's a thrash detector, not a profit-strategy change.
+
+### Iran NO cluster operator-closed (2026-05-23 evening)
+
+Both open Iran peace-deal positions closed via `scripts/close_iran_no_2026-05-23.py`:
+- May 26 NO @ 0.385 → 0.39 → +$0.29
+- Jun 30 NO @ 0.305 → 0.255 → −$3.69
+- Net −$3.39 realized, freed $41.57 of capital.
+
+Bot resumed cleanly with `stop_streak_by_cid={}` and `blocklisted_until={}` — confirms `operator_close` bypassed the streak.
+
 ## Watch out for SIGTERM-ignoring zombie processes
 
 main.py has been observed ignoring SIGTERM. The "stop" command appears to succeed, but the process keeps running and overwrites portfolio.json on heartbeat (~9 min in), clobbering close-out scripts.
@@ -81,6 +124,20 @@ If anything comes back, force-kill with `kill -9 <PID>`. Otherwise a "restart" s
 ## The 25% category cap structurally fixes wash trades
 
 When the bot closes a position and then re-buys the same condition_id on the next cycle (the "wash trade memory gap" noted in earlier session logs), the new 25% category cap blocks it if other positions in that category already fill the cap. Verified live: bot tried to re-buy "Will the U.S. invade Iran before 2027? NO" within 7 minutes of closing it; the 25% geopolitics cap blocked the wash. Don't relax this cap without thinking about the wash-trade implication.
+
+## Operational notes (added 2026-05-27)
+
+### Category exposure cap tightened from 25% → 15%
+
+Config edit only, no code change. `max_category_exposure_pct` in `polymarket_bot_config.json` lowered from 0.25 to 0.15.
+
+**Why:** today's morning briefing flagged 4 open positions on the same underlying thesis ("short the longshot priced too high") split across two categories — Israel/Hezbollah + US/Iran in `geopolitics`, Spencer Pratt + de la Espriella in `politics`/`other`. The risk limiter caught it and hit "Risk BLOCK" on both categories at the 25% cap. The cluster was net +$3.42 unrealized at the time so this is **preventive**, not corrective — the bot has been making money on the correlated cluster, but the concentration risk is real if a wave of upsets hits multiple longshots at once.
+
+Lowering to 15% forces a more diversified posture without otherwise changing strategy. Picks up effect after the next restart.
+
+### Weather bot day: implications for the Claude bot, none
+
+Today's deep diagnostic was entirely on the weather bot. The Claude bot's per-condition_id stop-loss circuit breaker (`cc5ff09`) is doing its job — no stop-streaks active. Lifetime realized P&L on this bot remains positive (+$62.52 across 41 closed trades plus ~$8-12 unrealized on the open book). Don't reflexively apply weather-bot lessons here; the two bots have different signal sources, different exit logic, and different problem profiles.
 
 ## Running
 
