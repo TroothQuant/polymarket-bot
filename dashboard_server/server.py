@@ -156,14 +156,26 @@ def claude_trades(limit: int = 50) -> JSONResponse:
     # in time. Rebuild buy_by_cid incrementally so an earlier SELL doesn't see
     # a later BUY's price.
     running_buys: Dict[str, Dict[str, Any]] = {}
+    # Sequential trade number: increments on each BUY in chronological order, so
+    # a trade can be referenced as "#21". SELLs inherit the trade_num of the
+    # most-recent matching BUY (same condition_id); unmatched SELLs get None.
+    # claude_positions_detail() reproduces this exact counting so the numbers
+    # line up between the trades table and the open-position cards.
+    trade_num_by_cid: Dict[str, int] = {}
+    buy_counter = 0
     for r in all_rows:
         out = dict(r)
         action = (r.get("action") or "").upper()
         cid = r.get("condition_id", "")
         if action == "BUY":
+            buy_counter += 1
+            out["trade_num"] = buy_counter
             running_buys[cid] = r
+            if cid:
+                trade_num_by_cid[cid] = buy_counter
             out["pnl"] = None
         elif action == "SELL":
+            out["trade_num"] = trade_num_by_cid.get(cid)
             buy = running_buys.get(cid)
             if buy:
                 try:
@@ -174,6 +186,7 @@ def claude_trades(limit: int = 50) -> JSONResponse:
             else:
                 out["pnl"] = None
         else:
+            out["trade_num"] = None
             out["pnl"] = None
         enriched.append(out)
 
@@ -251,17 +264,74 @@ def claude_snapshots(since: str = "24h") -> JSONResponse:
 
 # -------------------- /api/claude/positions-detail --------------------
 
+# -------------------- Stuck-market detection (CLOB midpoint 404) --------------------
+# A position is "stuck" when Polymarket's CLOB has de-listed its token — the
+# /midpoint endpoint returns 404. Empirically verified 2026-05-29: active markets
+# return 200 (Spurs, Iran) and cancelled/voided markets return 404 (the two Roland
+# Garros withdrawals). 404 alone is therefore a clean signal. We deliberately do
+# NOT gate on end_date < now: a market can be voided BEFORE its scheduled end, and
+# the two stuck Roland Garros positions actually carried a *future* end_date
+# (2026-05-31), so an end_date gate would have failed to flag them.
+CLOB_MIDPOINT_URL = "https://clob.polymarket.com/midpoint"
+CLOB_USER_AGENT = "trooth-claude-bot-dashboard/1.0"  # explicit UA — bare requests get 403
+CLOB_CACHE_TTL = 600  # 10 min per token_id, so dashboard polls don't hammer CLOB
+
+# token_id -> (checked_at_unix, is_stuck: bool)
+_clob_status_cache: Dict[str, tuple] = {}
+# token_id -> unix timestamp first observed stuck (in-memory; cleared if it re-lists)
+_stuck_since: Dict[str, float] = {}
+
+
+def _clob_token_stuck(token_id: str) -> Optional[bool]:
+    """True if the token's CLOB /midpoint 404s (de-listed), False if live (200),
+    None if inconclusive (network error, or 403 = our request was rejected).
+    Cached for CLOB_CACHE_TTL seconds per token_id."""
+    if not token_id:
+        return None
+    now = time.time()
+    cached = _clob_status_cache.get(token_id)
+    if cached and (now - cached[0]) < CLOB_CACHE_TTL:
+        return cached[1]
+    try:
+        resp = httpx.get(
+            CLOB_MIDPOINT_URL,
+            params={"token_id": token_id},
+            headers={"User-Agent": CLOB_USER_AGENT},
+            timeout=4.0,
+        )
+        code = resp.status_code
+    except httpx.HTTPError as e:
+        print(f"[stuck-check] CLOB midpoint error for {token_id[:12]}…: {e} — not flagging")
+        return None
+    if code == 403:
+        # Our request was rejected (UA blocked) — inconclusive, do NOT flag.
+        print(f"[stuck-check] CLOB 403 for {token_id[:12]}… — request rejected, not flagging")
+        return None
+    is_stuck = (code == 404)
+    _clob_status_cache[token_id] = (now, is_stuck)
+    return is_stuck
+
+
 @app.get("/api/claude/positions-detail")
 def claude_positions_detail() -> JSONResponse:
     """Enriched open positions: portfolio.json + edge_at_entry from trades.jsonl +
     computed hold duration. end_date is already on the position if the new bot wrote it,
-    or on legacy positions after the backfill script."""
+    or on legacy positions after the backfill script.
+
+    Also flags positions whose CLOB token has been de-listed (midpoint 404) as
+    `stuck`, with a `stuck_since` unix timestamp and `stuck_seconds` duration."""
     data = _read_json(PORTFOLIO_PATH)
     if data is None:
         return JSONResponse({"positions": []})
 
     # Index BUY entries from trades.jsonl by condition_id (most-recent first)
     edge_by_cid: Dict[str, Dict[str, Any]] = {}
+    # Sequential trade number per condition_id, counted exactly as in
+    # claude_trades(): increment on every BUY in chronological order, keep the
+    # most-recent BUY's number per cid. Lets each open position render "#N"
+    # matching the trades table.
+    trade_num_by_cid: Dict[str, int] = {}
+    buy_counter = 0
     if TRADES_PATH.exists():
         try:
             with open(TRADES_PATH, encoding="utf-8", errors="replace") as f:
@@ -271,6 +341,7 @@ def claude_positions_detail() -> JSONResponse:
                     except json.JSONDecodeError:
                         continue
                     if (t.get("action") or "").upper() == "BUY":
+                        buy_counter += 1
                         cid = t.get("condition_id")
                         if cid:
                             # later writes overwrite earlier — we'll have the most recent BUY's metadata
@@ -279,6 +350,7 @@ def claude_positions_detail() -> JSONResponse:
                                 "kelly_at_entry": t.get("kelly_at_entry", 0.0),
                                 "rationale": t.get("rationale", ""),
                             }
+                            trade_num_by_cid[cid] = buy_counter
         except OSError:
             pass
 
@@ -306,6 +378,28 @@ def claude_positions_detail() -> JSONResponse:
         curr = float(pos.get("current_price") or 0)
         pnl_pct = ((curr - entry) / entry) if entry > 0 else 0.0
 
+        # Stuck-market detection: CLOB token de-listed (midpoint 404).
+        token_id = pos.get("token_id") or ""
+        stuck = False
+        stuck_since: Optional[float] = None
+        stuck_seconds: Optional[int] = None
+        clob_state = _clob_token_stuck(token_id)
+        if clob_state is True:
+            stuck = True
+            if token_id not in _stuck_since:
+                # Fresh transition into stuck — record time and log ONCE (not per poll).
+                _stuck_since[token_id] = now
+                tnum = trade_num_by_cid.get(cid)
+                qtext = (pos.get("question") or "?")[:70]
+                print(f"[stuck] Position #{tnum} ({qtext}) appears stuck — Polymarket void likely pending")
+            stuck_since = _stuck_since[token_id]
+            stuck_seconds = int(now - stuck_since)
+        elif clob_state is False and token_id in _stuck_since:
+            # Re-listed (rare) — clear and note the transition out.
+            del _stuck_since[token_id]
+            print(f"[stuck] token {token_id[:12]}… no longer stuck (CLOB live again)")
+        # clob_state is None → inconclusive: leave stuck=False, don't touch _stuck_since.
+
         enriched.append({
             **pos,
             "hold_seconds": hold_seconds,
@@ -314,6 +408,10 @@ def claude_positions_detail() -> JSONResponse:
             "edge_at_entry": meta.get("edge_at_entry", 0.0),
             "kelly_at_entry": meta.get("kelly_at_entry", 0.0),
             "rationale": meta.get("rationale", ""),
+            "trade_num": trade_num_by_cid.get(cid),
+            "stuck": stuck,
+            "stuck_since": stuck_since,
+            "stuck_seconds": stuck_seconds,
         })
     return JSONResponse({"positions": enriched, "last_updated": data.get("last_updated")})
 
