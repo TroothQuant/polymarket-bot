@@ -1,3 +1,10 @@
 requests>=2.31
 anthropic>=0.40
 py-clob-client>=0.0.1
+
+# Dashboard server (dashboard_server/server.py). Soak-tested in the Mac
+# venv since the dashboard was first stood up; documented here ahead of
+# Cloud Migration Session 3 so the server can pip install in one pass.
+fastapi>=0.109
+uvicorn[standard]>=0.27
+httpx>=0.26
