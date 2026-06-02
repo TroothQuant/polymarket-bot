@@ -41,13 +41,17 @@ class EloState:
     season: int
 
 
-def expected_win_probability(rating_home: float, rating_away: float) -> float:
+def expected_win_probability(rating_home: float, rating_away: float,
+                             hfa: float = HOME_FIELD_ADVANTAGE) -> float:
     """Home team's expected win probability against away team.
 
     Pure formula, no side effects. HFA is added to the home team's rating
     before the comparison — matches the FiveThirtyEight implementation.
+
+    `hfa` defaults to the module constant for backward compatibility with
+    Phase 1 + Phase 2 callers; sweep scripts can override.
     """
-    return 1.0 / (1.0 + 10.0 ** ((rating_away - rating_home - HOME_FIELD_ADVANTAGE) / 400.0))
+    return 1.0 / (1.0 + 10.0 ** ((rating_away - rating_home - hfa) / 400.0))
 
 
 def margin_of_victory_multiplier(home_score: int, away_score: int,
@@ -67,17 +71,26 @@ def margin_of_victory_multiplier(home_score: int, away_score: int,
 
 def update_after_game(state_home: EloState, state_away: EloState,
                       home_score: int, away_score: int,
-                      game_pk: int) -> tuple[EloState, EloState]:
+                      game_pk: int,
+                      k: float = K_FACTOR,
+                      hfa: float = HOME_FIELD_ADVANTAGE,
+                      mov_enabled: bool = True) -> tuple[EloState, EloState]:
     """Return (new_home_state, new_away_state) after applying one game's result.
 
     Pure function: does NOT mutate the inputs. Caller is responsible for
     persisting the new state to mlb_cache.db.
+
+    Phase 2.5 sweep: `k`, `hfa`, `mov_enabled` are tunable via kwargs. Defaults
+    preserve Phase 1 + Phase 2 behavior exactly (K=4, HFA=24, MoV on).
     """
-    expected_home = expected_win_probability(state_home.rating, state_away.rating)
+    expected_home = expected_win_probability(state_home.rating, state_away.rating, hfa=hfa)
     actual_home = 1.0 if home_score > away_score else 0.0
-    mov = margin_of_victory_multiplier(home_score, away_score,
-                                       state_home.rating, state_away.rating)
-    delta = K_FACTOR * mov * (actual_home - expected_home)
+    if mov_enabled:
+        mov = margin_of_victory_multiplier(home_score, away_score,
+                                           state_home.rating, state_away.rating)
+    else:
+        mov = 1.0
+    delta = k * mov * (actual_home - expected_home)
     return (
         EloState(team_id=state_home.team_id,
                  rating=state_home.rating + delta,
