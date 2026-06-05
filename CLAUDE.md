@@ -139,6 +139,48 @@ Lowering to 15% forces a more diversified posture without otherwise changing str
 
 Today's deep diagnostic was entirely on the weather bot. The Claude bot's per-condition_id stop-loss circuit breaker (`cc5ff09`) is doing its job — no stop-streaks active. Lifetime realized P&L on this bot remains positive (+$62.52 across 41 closed trades plus ~$8-12 unrealized on the open book). Don't reflexively apply weather-bot lessons here; the two bots have different signal sources, different exit logic, and different problem profiles.
 
+## Operational notes (added 2026-06-02)
+
+**As of 2026-06-02 ~13:14-13:16 UTC, the live Claude bot AND the dashboard run on `trooth-prod-nyc3` (DigitalOcean droplet, NYC3), NOT on the Mac.** Mac repo + state + config preserved as fallback at `~/Projects/trooth-claude-bot/` (untouched) and snapshots at `~/Projects/trooth-claude-bot/data/backups/pre_cloud_migration_2026-06-02/`. Cloud-migration session writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-02.md`.
+
+- **SSH into the server:** `ssh trooth-server` (alias, Tailnet-routed). Repo: `/home/trooth/Projects/trooth-claude-bot`. Server HEAD as of cutover: `e5102e5` (one commit ahead of yesterday's pre-cutover state — documented dashboard deps).
+- **Live bot unit:** `trooth-claude-bot.service` (enabled, active). `sudo systemctl status trooth-claude-bot` or `sudo journalctl -u trooth-claude-bot -f`. **`WorkingDirectory=/home/trooth/Projects/trooth-claude-bot/python` (the `python/` subdir, NOT the repo root)** — required because `config.data_dir` defaults to `"../data"` which only resolves correctly when CWD is `python/`. ExecStart is `.venv/bin/python python/main.py` (no `--console`). Environment includes `CONFIG_FILE=/home/trooth/.config/trooth/claude.json` and `PYTHONUNBUFFERED=1` (so `print()` calls flush to journal in real time).
+- **Live dashboard unit:** `trooth-claude-dashboard.service` (enabled, active). Binds to `127.0.0.1:8001` on the server. Reads JSON/JSONL state files written by the bot; never writes. To view from your Mac: open a Mac Terminal tab and run `ssh -L 8001:localhost:8001 trooth-server`, leave it open, then visit `http://localhost:8001` in the browser. **The Mac dashboard at `~/Projects/trooth-claude-bot/dashboard_server/dashboard.html` is now a stale historical viewer** — Mac state files are frozen at the 2026-06-02 13:14 UTC quiescent point.
+- **Server-side state path map:**
+
+  | What | Where |
+  |---|---|
+  | Repo | `/home/trooth/Projects/trooth-claude-bot/` |
+  | venv | `/home/trooth/Projects/trooth-claude-bot/.venv/` (Python 3.12.3) |
+  | Live `portfolio.json`, `trades.jsonl`, `snapshots.db` | `/home/trooth/Projects/trooth-claude-bot/data/` |
+  | Config (Anthropic key + risk knobs) | `/home/trooth/.config/trooth/claude.json` (mode 600) |
+  | `CONFIG_FILE` env | Set in systemd unit to the path above |
+
+- **Rollback procedure (next 7 days):**
+
+  ```
+  ssh trooth-server "sudo systemctl disable --now trooth-claude-bot trooth-claude-dashboard"
+  ~/Projects/trooth-claude-bot/scripts/run_paper.sh     # Mac Tab 2
+  ~/Projects/trooth-claude-bot/scripts/run_dashboard.sh # Mac Tab 3
+  open http://localhost:8001                            # browser, no tunnel needed for Mac-local
+  ```
+
+- **One commit shipped to `origin/master` to support the cutover:** `e5102e5` — `chore(deps): document dashboard server deps in python/requirements.txt`. Adds `fastapi`, `uvicorn[standard]`, `httpx` floors. They were already running in the Mac venv (so soak-tested) but never written into the requirements file.
+- **Overnight auto-restarts are expected and OK.** Ubuntu's `unattended-upgrades` ran at 06:44-06:50 UTC on 6/2 and `needrestart` auto-restarted the weather bot. Same will apply to the Claude bot + dashboard. systemd's `Restart=on-failure` handles it; you'll see a recent "started" timestamp in `systemctl status` on a morning check. Not a regression.
+
+## Operational notes (added 2026-06-05)
+
+Audit remediation (CRITICALs #1/#2/#3/#6/#7 + HIGHs #8/#10/#11/#18/#25 on this bot). All shipped to the live server with per-file backups (`*.bak_*_20260605`). No entry/sizing/exit-strategy change beyond #6.
+
+- **`resolve_position` signature CHANGED** — now `resolve_position(condition_id, outcome: str)` where `outcome in {"won","lost","void"}` (was `(condition_id, won: bool)`). Void pays `0.5 × shares` and touches **neither** the stop-streak **nor** the HWM. Raises `ValueError` on an unknown outcome. The single caller in `main.py` was updated. **If you add a caller, pass the string, not a bool.**
+- **Settlement-detection fallback (#1)** — `market_scanner.check_market_resolution` falls back to gamma `/markets?condition_ids={cid}&closed=true` on a CLOB 404, returning `winning_side`, `{"status":"void"}`, or `{"status":"unknown_delisted"}` (logged + skipped for manual review). `get_market_price` now logs 404=info / 5xx=warning / other=error instead of swallowing at debug (closes HIGH #18).
+- **SIGTERM handled (#3)** — `signal.SIGTERM` now runs the same graceful shutdown as SIGINT; `systemctl stop/restart` saves state cleanly.
+- **Count caps recalibrated for $1,500 (#6)** — `max_concurrent_positions=10→6`; new config knob **`min_position_pct=0.04`** (in `claude.json` + `config.py`), enforced in `portfolio.py` as `floor = max(min_trade_usd, min_position_pct × portfolio_value)`; sub-floor trades are skipped (logged), not rounded up. Size band ≈ $58–$146 at current pv. `max_position_pct=0.10` unchanged.
+- **SQLite WAL + busy_timeout=5000 (#8)** — via `_apply_sqlite_pragmas` in `persistence.py`. State files now mode 600 (`os.umask(0o077)` at boot + `os.chmod` after writes) (#11). Gemini key moved to `x-goog-api-key` header (#10). Vestigial `EnvironmentFile=-` removed from the systemd unit (#25).
+- **CONFIG_FILE gotcha** — when testing config load by hand, `export CONFIG_FILE=/home/trooth/.config/trooth/claude.json` first, or `BotConfig.from_env()` silently falls back to dataclass defaults (the server unit sets it, so the live service is always correct).
+
+Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-05.md`.
+
 ## Running
 
 ### Config file (primary)
