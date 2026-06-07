@@ -136,7 +136,9 @@ def compute_realized_pnl(actual_result: str, stake: float, vwap_fill: float
         return -stake
     if actual_result == "void":
         return 0.0
-    return 0.0
+    # Audit #14: a typo or an unmapped status ("Win", "postponed") must not
+    # silently settle as 0.00 — that's indistinguishable from a real void.
+    raise ValueError(f"Unrecognized actual_result: {actual_result!r}")
 
 
 # ===========================================================================

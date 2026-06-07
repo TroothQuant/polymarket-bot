@@ -71,10 +71,23 @@ def test_degenerate_vwap_returns_zero():
     assert ledger.compute_realized_pnl("win", stake=50.0, vwap_fill=1.0) == 0.0
 
 
-def test_unknown_result_returns_zero():
-    """An unrecognized actual_result string returns 0 (defensive)."""
-    assert ledger.compute_realized_pnl("pending", stake=50.0, vwap_fill=0.50) == 0.0
-    assert ledger.compute_realized_pnl("", stake=50.0, vwap_fill=0.50) == 0.0
+def test_unknown_result_raises_value_error():
+    """Audit #14: an unrecognized actual_result must raise, not settle as 0.
+    A capitalization typo or an unmapped status (postponed) would otherwise be
+    indistinguishable from a real void."""
+    with pytest.raises(ValueError, match="Unrecognized actual_result"):
+        ledger.compute_realized_pnl("Win", stake=50.0, vwap_fill=0.50)
+    with pytest.raises(ValueError, match="postponed"):
+        ledger.compute_realized_pnl("postponed", stake=50.0, vwap_fill=0.50)
+    with pytest.raises(ValueError):
+        ledger.compute_realized_pnl("", stake=50.0, vwap_fill=0.50)
+
+
+def test_known_results_still_settle_correctly():
+    """Audit #14 regression guard: win/loss/void keep their exact math."""
+    assert math.isclose(ledger.compute_realized_pnl("win", stake=50.0, vwap_fill=0.50), 50.0, abs_tol=1e-6)
+    assert math.isclose(ledger.compute_realized_pnl("loss", stake=50.0, vwap_fill=0.50), -50.0, abs_tol=1e-6)
+    assert ledger.compute_realized_pnl("void", stake=50.0, vwap_fill=0.50) == 0.0
 
 
 def test_win_vs_loss_zero_sum_check():
