@@ -127,7 +127,7 @@ def find_moneyline_market(event: dict, home_name: str, away_name: str) -> dict |
             continue
         # Moneyline pattern: question is exactly "{Team A} vs. {Team B}"
         # AND outcomes are the two team names (not "Over"/"Under" or "Yes"/"No").
-        if market_detector.detect(q).value != "game_moneyline":
+        if market_detector.detect(q, event.get("slug")).value != "game_moneyline":
             continue
         if set(outcomes) != {home_name, away_name}:
             continue

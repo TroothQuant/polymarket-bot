@@ -37,31 +37,63 @@ _MONEYLINE_QUESTION_RE = re.compile(
 )
 
 
-def detect(question: str, event_slug: str | None = None) -> MarketType:
-    """Return the MarketType for a Polymarket question + optional slug.
+# Audit #20 belt-and-suspenders: the question regex alone matches ANY
+# "X vs. Y" pair ("Liverpool vs. Manchester United", "Federer vs. Nadal").
+# Both parsed team names must be real MLB clubs before the regex counts.
+# All 30 clubs, 2026 season. "Athletics" is the club's official name since
+# the 2025 Sacramento relocation; "Oakland Athletics" kept as an alias so
+# older cached gamma rows keep matching.
+MLB_TEAMS = frozenset({
+    "Arizona Diamondbacks", "Atlanta Braves", "Baltimore Orioles",
+    "Boston Red Sox", "Chicago Cubs", "Chicago White Sox",
+    "Cincinnati Reds", "Cleveland Guardians", "Colorado Rockies",
+    "Detroit Tigers", "Houston Astros", "Kansas City Royals",
+    "Los Angeles Angels", "Los Angeles Dodgers", "Miami Marlins",
+    "Milwaukee Brewers", "Minnesota Twins", "New York Mets",
+    "New York Yankees", "Athletics", "Oakland Athletics",
+    "Philadelphia Phillies", "Pittsburgh Pirates", "San Diego Padres",
+    "San Francisco Giants", "Seattle Mariners", "St. Louis Cardinals",
+    "Tampa Bay Rays", "Texas Rangers", "Toronto Blue Jays",
+    "Washington Nationals",
+})
+
+
+def detect(question: str, event_slug: str | None) -> MarketType:
+    """Return the MarketType for a Polymarket question + event slug.
+
+    Audit #20: event_slug is now a REQUIRED argument — production call sites
+    (phase3 edge scan, paper ledger) always have the event and must pass its
+    slug. Passing None is reserved for slug-less contexts (backtest harness),
+    where the MLB_TEAMS whitelist is the only line of defense.
 
     Decision order:
-      1. If event_slug contains 'mlb-' or '/sports/mlb/' -> almost certainly
-         an MLB market. Further sub-classify by question regex.
-      2. Else, fall back to question-regex-only check. Lower confidence but
-         still catches the standard "X vs. Y" pattern.
-      3. Else -> MarketType.NOT_MLB.
+      1. Question must match the moneyline regex AND both parsed team names
+         must be in the MLB_TEAMS whitelist. Otherwise -> NOT_MLB.
+      2. If event_slug contains 'mlb-' or '/sports/mlb/' -> GAME_MONEYLINE.
+      3. If event_slug is None (explicit slug-less context) -> trust the
+         whitelist-guarded regex -> GAME_MONEYLINE.
+      4. Slug present but not MLB (e.g. 'epl-...') -> NOT_MLB, even when the
+         question parses — a soccer/tennis "X vs. Y" must never pass.
 
     Phase 3 connects this to the Claude bot's estimator.py — non-MLB markets
     skip sports_research entirely and use the existing weather-or-generic
     estimation path.
     """
-    is_mlb_by_slug = bool(event_slug) and ("mlb-" in event_slug or "/sports/mlb/" in event_slug)
-    is_moneyline_by_question = bool(_MONEYLINE_QUESTION_RE.match(question.strip()))
-
-    if is_mlb_by_slug and is_moneyline_by_question:
-        return MarketType.GAME_MONEYLINE
-    if is_moneyline_by_question and event_slug is None:
-        # Slug-less context (e.g., backtest harness): trust the regex.
-        return MarketType.GAME_MONEYLINE
-    if is_mlb_by_slug and not is_moneyline_by_question:
-        # MLB market but not a simple moneyline — Phase 1 doesn't handle it.
+    teams = parse_teams(question)
+    is_moneyline_by_question = (
+        teams is not None
+        and teams[0] in MLB_TEAMS
+        and teams[1] in MLB_TEAMS
+    )
+    if not is_moneyline_by_question:
         return MarketType.NOT_MLB
+
+    is_mlb_by_slug = bool(event_slug) and ("mlb-" in event_slug or "/sports/mlb/" in event_slug)
+    if is_mlb_by_slug:
+        return MarketType.GAME_MONEYLINE
+    if event_slug is None:
+        # Slug-less context (e.g., backtest harness): whitelist-guarded regex.
+        return MarketType.GAME_MONEYLINE
     return MarketType.NOT_MLB
 
 

@@ -198,7 +198,7 @@ def fetch_clob_token_id(event: dict, side_team: str,
         if not (isinstance(outcomes, list) and isinstance(token_ids, list)
                 and len(outcomes) == 2 and len(token_ids) == 2):
             continue
-        if market_detector.detect(q).value != "game_moneyline":
+        if market_detector.detect(q, event.get("slug")).value != "game_moneyline":
             continue
         if set(outcomes) != {home_name, away_name}:
             continue
@@ -230,7 +230,7 @@ def get_moneyline_for_event(event: dict, home_name: str, away_name: str
         outcomes = _decode_str_or_array(m.get("outcomes", []))
         if not (isinstance(outcomes, list) and len(outcomes) == 2):
             continue
-        if market_detector.detect(q).value != "game_moneyline":
+        if market_detector.detect(q, event.get("slug")).value != "game_moneyline":
             continue
         if set(outcomes) != {home_name, away_name}:
             continue
