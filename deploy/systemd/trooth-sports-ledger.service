@@ -1,0 +1,28 @@
+# REFERENCE COPY — the live file is /etc/systemd/system/trooth-sports-ledger.service
+# Keep in sync when editing the live unit. Tracked since audit #19/#24 so unit
+# changes are version-controlled and individually revertible.
+# Filled in 2026-06-03 (Sports Bot Phase 4-measure).
+# Daily paper-trade ledger: settle yesterdays open rows first, then log
+# todays new qualifying picks. Mirrors trooth-kalshi-calibration pattern.
+# Read-only: NO trades, NO writes to live bot state.
+[Unit]
+Description=TROOTH Sports Bot daily paper-trade ledger (settle + log)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=trooth
+Group=trooth
+WorkingDirectory=/home/trooth/Projects/trooth-claude-bot-sportsdev
+Environment=PYTHONUNBUFFERED=1
+# Audit #19: refresh current-season Elo before settling/logging (measured
+# ~10s incremental). "-" prefix: a flaky MLB API must not abort the ledger —
+# stale Elo beats a lost measurement day. Staleness is surfaced by the
+# "Last Elo update" line in --log output.
+ExecStartPre=-/home/trooth/Projects/trooth-claude-bot-sportsdev/.venv-sports/bin/python /home/trooth/Projects/trooth-claude-bot-sportsdev/scripts/sports_bot_phase1_backfill.py --seasons 2026
+# Audit #24: "-" prefix — a flaky-gamma --settle failure must not skip the
+# --log step, or the day's picks are never recorded (measurement gap).
+ExecStart=-/home/trooth/Projects/trooth-claude-bot-sportsdev/.venv-sports/bin/python /home/trooth/Projects/trooth-claude-bot-sportsdev/scripts/sports_bot_paper_ledger.py --settle
+ExecStart=/home/trooth/Projects/trooth-claude-bot-sportsdev/.venv-sports/bin/python /home/trooth/Projects/trooth-claude-bot-sportsdev/scripts/sports_bot_paper_ledger.py --log
+StandardOutput=journal
+StandardError=journal

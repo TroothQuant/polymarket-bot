@@ -1,0 +1,14 @@
+# Daily at 13:00 UTC. By then all prior nights MLB games are final
+# (latest US Pacific games end ~05:00 UTC). 13:00 UTC is also early enough
+# that days gamma listings are fully populated for the days game-log pass.
+[Unit]
+Description=Daily sports paper-trade ledger timer (13:00 UTC)
+Requires=trooth-sports-ledger.service
+
+[Timer]
+OnCalendar=*-*-* 13:00:00 UTC
+Persistent=true
+Unit=trooth-sports-ledger.service
+
+[Install]
+WantedBy=timers.target
