@@ -16,9 +16,29 @@ choke point.
 """
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 import pandas as pd
+
+
+def decode_str_or_array(v):
+    """Decode a Polymarket gamma API list field defensively (audit #26).
+
+    Gamma quirk: outcomes / outcomePrices / clobTokenIds can arrive as
+    JSON-encoded strings OR native arrays. A malformed string must not crash
+    the caller — it is returned unchanged, so the standard
+    isinstance(x, list) guard downstream rejects the row gracefully.
+
+    Canonical copy — phase3, phase35, and the paper ledger all import this
+    instead of keeping local variants / bare json.loads().
+    """
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return v
+    return v
 
 
 def fetch_season_schedule(season: int) -> pd.DataFrame:

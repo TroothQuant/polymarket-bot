@@ -144,13 +144,8 @@ def compute_realized_pnl(actual_result: str, stake: float, vwap_fill: float
 # ===========================================================================
 # Helpers to fetch today's market state (inline copies of Phase 3 / 3.5 logic)
 # ===========================================================================
-def _decode_str_or_array(v):
-    if isinstance(v, str):
-        try:
-            return json.loads(v)
-        except Exception:
-            return v
-    return v
+# Canonical defensive gamma decoder lives in data_fetcher (audit #26).
+from sports_research.mlb.data_fetcher import decode_str_or_array as _decode_str_or_array
 
 
 def fetch_today_mlb_events(target_date: dt.date) -> list[dict]:

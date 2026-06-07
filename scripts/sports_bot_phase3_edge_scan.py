@@ -63,15 +63,8 @@ OUTPUT_CSV = Path.home() / ".local/state/trooth/sports_edge_scan_2026-06-03.csv"
 GAMMA_API = "https://gamma-api.polymarket.com"
 
 
-def _decode_str_or_array(v):
-    """Polymarket gamma API quirk: outcomes/outcomePrices/clobTokenIds can
-    be JSON-encoded strings OR native arrays."""
-    if isinstance(v, str):
-        try:
-            return json.loads(v)
-        except Exception:
-            return v
-    return v
+# Canonical defensive gamma decoder lives in data_fetcher (audit #26).
+from sports_research.mlb.data_fetcher import decode_str_or_array as _decode_str_or_array
 
 
 def fetch_today_mlb_events(today_utc: dt.date) -> list[dict]:

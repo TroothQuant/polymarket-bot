@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
 from sports_research import execution_realism as er
+from sports_research.mlb.data_fetcher import decode_str_or_array
 
 
 SCAN_CSV_IN = Path.home() / ".local/state/trooth/sports_edge_scan_2026-06-03.csv"
@@ -59,12 +60,10 @@ def fetch_clob_token_id(slug: str, side_taken: str, home_team: str,
     ev = events[0]
     for m in ev.get("markets", []):
         q = (m.get("question", "") or "").strip()
-        outcomes = m.get("outcomes", "")
-        if isinstance(outcomes, str):
-            outcomes = json.loads(outcomes)
-        token_ids = m.get("clobTokenIds", "")
-        if isinstance(token_ids, str):
-            token_ids = json.loads(token_ids)
+        # Audit #26: defensive decode — a malformed gamma row falls through
+        # the isinstance guard below instead of crashing the whole rescore.
+        outcomes = decode_str_or_array(m.get("outcomes", ""))
+        token_ids = decode_str_or_array(m.get("clobTokenIds", ""))
         if not (isinstance(outcomes, list) and isinstance(token_ids, list)
                 and len(outcomes) == 2 and len(token_ids) == 2):
             continue
