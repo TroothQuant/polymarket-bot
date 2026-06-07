@@ -247,6 +247,25 @@ def run_log_mode() -> int:
     print(f"=== --log {today_utc.isoformat()} ===")
 
     con = cache.open_db()
+
+    # Audit #19: surface Elo freshness so a stale-ratings day is visible in
+    # the journal instead of silently drifting predictions.
+    row = con.execute(
+        "SELECT MAX(last_updated_at) FROM elo_ratings WHERE season = ?",
+        (season,),
+    ).fetchone()
+    last_elo = row[0] if row else None
+    if last_elo:
+        try:
+            age_h = (dt.datetime.now(dt.UTC)
+                     - dt.datetime.fromisoformat(last_elo)).total_seconds() / 3600
+            stale_note = "  << STALE (>36h)" if age_h > 36 else ""
+            print(f"  Last Elo update: {last_elo} ({age_h:.1f}h ago){stale_note}")
+        except (ValueError, TypeError):
+            print(f"  Last Elo update: {last_elo}")
+    else:
+        print(f"  Last Elo update: NONE for season {season} — run the backfill")
+
     existing = load_ledger()
     existing_keys = {(r.get("game_date", ""), r.get("slug", ""), r.get("side", ""))
                      for r in existing}
