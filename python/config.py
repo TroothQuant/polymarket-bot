@@ -89,6 +89,7 @@ class BotConfig:
 
     # Risk
     max_position_pct: float = 0.15
+    min_position_pct: float = 0.04
     max_total_exposure_pct: float = 1.00
     max_category_exposure_pct: float = 0.80
     daily_stop_loss_pct: float = 0.20
@@ -243,6 +244,7 @@ class BotConfig:
             min_edge=get("min_edge", 0.12),
             min_trade_usd=get("min_trade_usd", 0.5),
             max_position_pct=get("max_position_pct", 0.15),
+            min_position_pct=get("min_position_pct", 0.04),
             max_total_exposure_pct=get("max_total_exposure_pct", 1.00),
             max_category_exposure_pct=get("max_category_exposure_pct", 0.80),
             daily_stop_loss_pct=get("daily_stop_loss_pct", 0.20),

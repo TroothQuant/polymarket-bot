@@ -82,6 +82,10 @@ def save_snapshot(snapshot: PortfolioSnapshot, data_dir: str) -> None:
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
+    # Audit HIGH #11 (2026-06-05): owner-only — defends against a relaxed
+    # umask (eg if a future caller resets it) since portfolio.json carries
+    # live bankroll and the position book.
+    os.chmod(path, 0o600)
 
 
 def load_snapshot(data_dir: str) -> Optional[PortfolioSnapshot]:
@@ -127,6 +131,21 @@ def append_trade(trade: Trade, data_dir: str) -> None:
     path = os.path.join(data_dir, _TRADES_FILE)
     with open(path, "a") as f:
         f.write(json.dumps(trade, cls=_Encoder) + "\n")
+    # Audit HIGH #11 (2026-06-05): owner-only — see save_snapshot. Idempotent
+    # on existing files; sets the mode on the first write each restart.
+    os.chmod(path, 0o600)
+
+
+def _apply_sqlite_pragmas(conn: sqlite3.Connection) -> None:
+    """Audit HIGH #8 (2026-06-05): WAL + busy_timeout for snapshots.db.
+
+    WAL lets the dashboard reader coexist with the bot writer without locking
+    out one or the other. busy_timeout sleeps up to 5s on lock contention
+    instead of raising. journal_mode is persisted to the DB header, so the
+    first call here flips the file; subsequent connections inherit it.
+    """
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
 
 
 def _ensure_snapshots_db(data_dir: str) -> str:
@@ -135,6 +154,7 @@ def _ensure_snapshots_db(data_dir: str) -> str:
     path = os.path.join(data_dir, _SNAPSHOTS_FILE)
     conn = sqlite3.connect(path)
     try:
+        _apply_sqlite_pragmas(conn)
         conn.executescript(_SNAPSHOTS_SCHEMA)
         conn.commit()
     finally:
@@ -161,6 +181,7 @@ def append_pnl_snapshot(
     path = _ensure_snapshots_db(data_dir)
     conn = sqlite3.connect(path)
     try:
+        _apply_sqlite_pragmas(conn)
         conn.execute(
             """INSERT INTO pnl_snapshots
                (ts, bankroll, exposure, realized_pnl, unrealized_pnl,

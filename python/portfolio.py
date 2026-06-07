@@ -201,7 +201,22 @@ class Portfolio:
         size_usd = min(size_usd, portfolio_val * self.config.max_position_pct)
         size_usd = min(size_usd, self.bankroll)  # never exceed available cash
 
-        if size_usd < self.config.min_trade_usd:
+        # Per-position floor (audit CRITICAL #6, 2026-06-05). After the
+        # bankroll bump $200 -> $1500 the count caps stayed scaled while the
+        # min-size dust still got through (eg $0.50 - $40 micro-lots that have
+        # no strategic upside and just chew through the concurrent-position
+        # budget). Skip rather than round up — a too-small position means the
+        # Kelly call doesn't want this trade at meaningful size, so respect it.
+        floor = max(
+            self.config.min_trade_usd,
+            self.config.min_position_pct * portfolio_val,
+        )
+        if size_usd < floor:
+            log.info(
+                f"skip: ${size_usd:.2f} below min position floor ${floor:.2f} "
+                f"({self.config.min_position_pct:.0%} of portfolio ${portfolio_val:.0f}) "
+                f"— {market.question[:40]}"
+            )
             return None
 
         # CLOB minimum: 5 tokens at the aggressive price (market price + 2 ticks of BUY aggression).
@@ -343,31 +358,46 @@ class Portfolio:
                  + (f" [{exit_reason}]" if exit_reason else ""))
         return pnl
 
-    def resolve_position(self, condition_id: str, won: bool) -> float:
-        """Close a resolved market position. Won: payout = shares * $1.00. Lost: payout = $0.
-        Returns realized PnL."""
+    def resolve_position(self, condition_id: str, outcome: str) -> float:
+        """Close a resolved market position. Returns realized PnL.
+
+        outcome:
+          "won"  -> payout = pos.shares          (each share pays $1.00)
+          "lost" -> payout = 0.0
+          "void" -> payout = 0.5 * pos.shares    (Polymarket 50-50 cash settlement)
+        """
+        if outcome not in ("won", "lost", "void"):
+            raise ValueError(f"Unrecognized outcome: {outcome!r}")
+
         pos = next((p for p in self.positions if p.condition_id == condition_id), None)
         if pos is None:
             return 0.0
 
-        payout = pos.shares if won else 0.0
+        if outcome == "won":
+            payout = pos.shares
+        elif outcome == "lost":
+            payout = 0.0
+        else:  # void
+            payout = 0.5 * pos.shares
+
         pnl = payout - pos.size_usd
         self.bankroll += payout
         self.total_realized_pnl += pnl
         self.total_trades += 1
         self.positions = [p for p in self.positions if p.condition_id != condition_id]
         self._recently_closed[condition_id] = time.time()
-        self.high_water_mark = max(self.high_water_mark, self.bankroll)
 
-        # Resolution outcome feeds the stop-loss streak: a won market
-        # invalidates any prior streak (the model was right after all);
-        # a lost market reinforces it (treat as a "stop" at settlement).
-        if won:
+        # HWM + stop-streak: won/lost update both; void is a refund, not a model
+        # signal — leave HWM and stop-streak untouched.
+        if outcome == "won":
             self._clear_stop_streak(condition_id)
-        else:
+            self.high_water_mark = max(self.high_water_mark, self.bankroll)
+        elif outcome == "lost":
             self._record_stop_loss(condition_id)
+            self.high_water_mark = max(self.high_water_mark, self.bankroll)
+        # void: no stop-streak touch, no HWM update
 
-        result = "WON" if won else "LOST"
+        result = outcome.upper()
         log.info(f"Resolved ({result}): {pos.question[:40]}... payout=${payout:.2f}, PnL=${pnl:+.2f}")
         return pnl
 

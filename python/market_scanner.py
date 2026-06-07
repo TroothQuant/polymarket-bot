@@ -235,13 +235,19 @@ class MarketScanner:
         return "other"
 
     def check_market_resolution(self, condition_id: str) -> Optional[dict]:
-        """Check if a market has resolved via CLOB API.
-        Returns {"winning_side": "YES"|"NO"} if resolved, None if still active."""
+        """Check if a market has resolved.
+        Returns:
+          {"winning_side": "YES"|"NO"} if resolved decisively,
+          {"status": "void"}           if 50-50 cash settlement,
+          {"status": "unknown_delisted"} if CLOB 404 and Gamma also can't confirm,
+          None                          if still open / inconclusive."""
         try:
             url = f"{self.config.clob_host}/markets/{condition_id}"
             resp = self.session.get(url, timeout=10)
             if resp.status_code == 404:
-                return None
+                # CLOB has dropped the market — could be resolved+pruned or
+                # UMA-resolved on Gamma but never propagated to CLOB. Fall back.
+                return self._resolve_via_gamma(condition_id)
             resp.raise_for_status()
             data = resp.json()
 
@@ -258,11 +264,106 @@ class MarketScanner:
                     elif outcome == "NO":
                         return {"winning_side": "NO"}
 
-            # Market closed but no winner flagged yet
-            return None
+            # Market closed but no winner flag matched. Two known shapes land
+            # here: (a) 50-50 void settlements (no token carries winner=True),
+            # (b) sports/esports markets whose token outcomes are team names,
+            # never YES/NO. CLOB alone cannot disambiguate either — reuse the
+            # gamma fallback (handles void, decisive, and unknown_delisted).
+            return self._resolve_via_gamma(condition_id)
         except Exception as e:
             log.debug(f"Resolution check failed for {condition_id[:20]}...: {e}")
             return None
+
+    def _resolve_via_gamma(self, condition_id: str) -> dict:
+        """Gamma fallback when CLOB 404s. 3 attempts with exponential backoff.
+
+        Returns one of:
+          {"winning_side": "YES"|"NO"} — Gamma shows decisive resolution (>=0.99)
+          {"status": "void"}           — Gamma shows 50-50 / UMA void/cancel
+          {"status": "unknown_delisted"} — all 3 attempts inconclusive
+        """
+        base_url = self.config.gamma_api_host
+        last_err = None
+        for attempt in range(3):
+            if attempt > 0:
+                time.sleep(2 ** (attempt - 1))  # 1s, 2s between retries
+            try:
+                r = self.session.get(
+                    f"{base_url}/markets",
+                    params={"condition_ids": condition_id, "closed": "true", "limit": 1},
+                    timeout=15,
+                )
+                r.raise_for_status()
+                data = r.json()
+
+                market = None
+                if isinstance(data, list) and data:
+                    market = data[0]
+                elif isinstance(data, dict) and data.get("data"):
+                    market = data["data"][0]
+
+                if not market:
+                    last_err = "empty gamma response"
+                    continue
+
+                uma_status = (market.get("umaResolutionStatus") or "").lower()
+                if "void" in uma_status or "cancel" in uma_status:
+                    log.info(f"Gamma fallback: VOID via uma_status='{uma_status}' for {condition_id[:20]}...")
+                    return {"status": "void"}
+
+                outcome_prices_raw = market.get("outcomePrices", "[]")
+                outcomes_raw = market.get("outcomes", "[]")
+                outcome_prices = (
+                    json.loads(outcome_prices_raw)
+                    if isinstance(outcome_prices_raw, str) else outcome_prices_raw
+                )
+                outcomes = (
+                    json.loads(outcomes_raw)
+                    if isinstance(outcomes_raw, str) else outcomes_raw
+                )
+
+                if len(outcome_prices) < 2:
+                    last_err = f"short outcomePrices: {outcome_prices}"
+                    continue
+
+                try:
+                    p0 = float(outcome_prices[0])
+                    p1 = float(outcome_prices[1])
+                except (TypeError, ValueError):
+                    last_err = f"non-numeric outcomePrices: {outcome_prices}"
+                    continue
+
+                # 50-50 cash settlement
+                if abs(p0 - 0.5) < 0.05 and abs(p1 - 0.5) < 0.05:
+                    log.info(f"Gamma fallback: VOID via ~0.5/0.5 prices for {condition_id[:20]}...")
+                    return {"status": "void"}
+
+                # Map indices via outcomes labels if available, else assume [YES, NO]
+                yes_idx, no_idx = 0, 1
+                if outcomes and len(outcomes) >= 2:
+                    labels = [str(o).upper() for o in outcomes[:2]]
+                    if "YES" in labels and "NO" in labels:
+                        yes_idx = labels.index("YES")
+                        no_idx = labels.index("NO")
+
+                if float(outcome_prices[yes_idx]) >= 0.99:
+                    log.info(f"Gamma fallback: YES wins for {condition_id[:20]}...")
+                    return {"winning_side": "YES"}
+                if float(outcome_prices[no_idx]) >= 0.99:
+                    log.info(f"Gamma fallback: NO wins for {condition_id[:20]}...")
+                    return {"winning_side": "NO"}
+
+                last_err = f"closed but no decisive winner: prices={outcome_prices}"
+            except requests.RequestException as e:
+                last_err = f"http error: {e}"
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                last_err = f"parse error: {e}"
+
+        log.warning(
+            f"Gamma fallback exhausted for {condition_id[:20]}... "
+            f"({last_err}) — flagging unknown_delisted for manual review"
+        )
+        return {"status": "unknown_delisted"}
 
     def get_market_prices(self, token_ids: list[str]) -> dict[str, float]:
         """Fetch current prices for multiple tokens. Returns dict of token_id -> midpoint price."""
@@ -274,14 +375,32 @@ class MarketScanner:
         return prices
 
     def get_market_price(self, token_id: str) -> Optional[float]:
-        """Fetch current price for a single token from the CLOB API."""
+        """Fetch current price for a single token from the CLOB API.
+
+        Log levels are tiered so a CLOB outage is distinguishable from a
+        legitimately-resolved market on the operator's end:
+          - 404                  -> INFO  (resolved/void; expected after settle)
+          - 5xx                  -> WARN  (transient CLOB error)
+          - network/parse errors -> ERROR (something genuinely broken)
+        """
         try:
             url = f"{self.config.clob_host}/midpoint"
             params = {"token_id": token_id}
             resp = self.session.get(url, params=params, timeout=10)
+            if resp.status_code == 404:
+                log.info(f"Price 404 for {token_id[:20]}... (resolved/void)")
+                return None
+            if 500 <= resp.status_code < 600:
+                log.warning(
+                    f"Price {resp.status_code} for {token_id[:20]}... (transient CLOB error)"
+                )
+                return None
             resp.raise_for_status()
             data = resp.json()
             return float(data.get("mid", 0))
-        except Exception as e:
-            log.debug(f"Failed to get price for {token_id[:20]}...: {e}")
+        except requests.RequestException as e:
+            log.error(f"Network error fetching price for {token_id[:20]}...: {e}")
+            return None
+        except (ValueError, KeyError, TypeError) as e:
+            log.error(f"Parse error for price {token_id[:20]}...: {e}")
             return None

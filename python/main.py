@@ -122,6 +122,14 @@ def _rank_short_resolution_first(markets: list) -> list:
 
 
 def main():
+    # Audit HIGH #11 (2026-06-05): owner-only default for any file this
+    # process creates. portfolio.json + trades.jsonl + snapshots.db contain
+    # API key surfaces (snapshots indirectly, trades log positions tied to
+    # the live account). 0o077 makes new files 0o600 by default; the
+    # persistence layer also explicit-chmods the atomic-replaced state files
+    # in case the umask was changed by an unrelated module.
+    os.umask(0o077)
+
     # First and foremost: refuse to launch a second copy. See
     # _refuse_if_another_bot_alive() for rationale.
     _refuse_if_another_bot_alive()
@@ -288,6 +296,7 @@ def main():
         running = False
 
     signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 
     last_daily_reset = datetime.now(timezone.utc).date()
     cycle = 0
@@ -398,14 +407,46 @@ def main():
                 resolution = scanner.check_market_resolution(pos.condition_id)
                 if resolution is None:
                     continue
-                won = (pos.side.value == resolution["winning_side"])
-                pnl = portfolio.resolve_position(pos.condition_id, won)
-                result = "WON" if won else "LOST"
+                if resolution.get("status") == "unknown_delisted":
+                    log.warning(
+                        f"  UNRESOLVED (delisted, no gamma confirm) — manual review: {pos.question[:50]}"
+                    )
+                    if con:
+                        print(
+                            f"[{ts()}]   {YELLOW}UNRESOLVED (delisted): {pos.question[:50]}... — manual review{RESET}"
+                        )
+                    continue
+
+                if resolution.get("status") == "void":
+                    outcome = "void"
+                elif "winning_side" in resolution:
+                    outcome = "won" if pos.side.value == resolution["winning_side"] else "lost"
+                else:
+                    log.warning(f"  Unrecognized resolution shape for {pos.question[:50]}: {resolution}")
+                    continue
+
+                pnl = portfolio.resolve_position(pos.condition_id, outcome)
+
+                if outcome == "won":
+                    payout_display = pos.shares
+                    trade_price = 1.0
+                    result = "WON"
+                    color = GREEN
+                elif outcome == "lost":
+                    payout_display = 0.0
+                    trade_price = 0.0
+                    result = "LOST"
+                    color = RED
+                else:  # void
+                    payout_display = 0.5 * pos.shares
+                    trade_price = 0.5
+                    result = "VOID"
+                    color = YELLOW
+
                 resolved_count += 1
-                color = GREEN if won else RED
                 log.info(
                     f"  RESOLVED ({result}): {pos.question[:50]}... "
-                    f"payout={'$%.2f' % (pos.shares if won else 0)}, PnL=${pnl:+.2f}"
+                    f"payout=${payout_display:.2f}, PnL=${pnl:+.2f}"
                 )
                 if con:
                     print(f"[{ts()}]   {color}RESOLVED ({result}): {pos.question[:50]}... PnL=${pnl:+.2f}{RESET}")
@@ -416,17 +457,20 @@ def main():
                     question=pos.question,
                     side=pos.side,
                     action=TradeAction.SELL,
-                    price=1.0 if won else 0.0,
+                    price=trade_price,
                     size_usd=pos.size_usd,
                     shares=pos.shares,
                     timestamp=time.time(),
                     is_paper=not config.live_trading,
                     rationale=f"Market resolved: {result}",
-                    exit_reason=f"resolved_{result.lower()}",
+                    exit_reason=f"resolved_{outcome}",
                 )
                 append_trade(trade, config.data_dir)
                 save_snapshot(portfolio.snapshot(), config.data_dir)
-                notifier.notify_resolved(pos, won, pnl, portfolio)
+                # Email notifier only models won/lost. For void (refund), the log
+                # line above is the only signal — operator can review the trade row.
+                if outcome != "void":
+                    notifier.notify_resolved(pos, outcome == "won", pnl, portfolio)
 
             if resolved_count > 0:
                 log.info(f"  {resolved_count} market(s) resolved")

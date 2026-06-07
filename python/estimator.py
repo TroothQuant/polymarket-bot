@@ -429,7 +429,11 @@ class Estimator:
     def _call_gemini(self, market: MarketInfo):
         model = self._get_model("gemini")
         host = (self.config.gemini_api_host or "https://generativelanguage.googleapis.com").rstrip("/")
-        url = f"{host}/v1beta/models/{model}:generateContent?key={self.config.gemini_api_key}"
+        # Audit HIGH #10 (2026-06-05): the API key goes in an `x-goog-api-key`
+        # header, not the query string — query strings end up in HTTP access
+        # logs, proxy caches, and journald (we log full URLs at WARNING when
+        # provider calls fail).
+        url = f"{host}/v1beta/models/{model}:generateContent"
         payload = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": [{"role": "user", "parts": [{"text": _build_user_prompt(market)}]}],
@@ -439,7 +443,15 @@ class Estimator:
             },
         }
         try:
-            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+            resp = requests.post(
+                url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": self.config.gemini_api_key,
+                },
+                timeout=30,
+            )
             if resp.status_code == 429:
                 log.warning("Gemini rate limit — waiting 5s")
                 time.sleep(5)
@@ -533,10 +545,15 @@ class Estimator:
             elif provider == "gemini":
                 host = (self.config.gemini_api_host or "https://generativelanguage.googleapis.com").rstrip("/")
                 model = self._get_model("gemini")
+                # Audit HIGH #10 (2026-06-05): key in x-goog-api-key header,
+                # not the URL — see _call_gemini above.
                 resp = requests.post(
-                    f"{host}/v1beta/models/{model}:generateContent?key={self.config.gemini_api_key}",
+                    f"{host}/v1beta/models/{model}:generateContent",
                     json={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}},
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": self.config.gemini_api_key,
+                    },
                     timeout=10,
                 )
                 if resp.status_code == 403:
