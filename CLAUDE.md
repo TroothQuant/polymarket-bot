@@ -181,6 +181,16 @@ Audit remediation (CRITICALs #1/#2/#3/#6/#7 + HIGHs #8/#10/#11/#18/#25 on this b
 
 Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-05.md`.
 
+## Operational notes (added 2026-06-08)
+
+- **NEVER restart the bot while Anthropic credits are exhausted.** `main.py` `sys.exit(1)`s when provider validation fails at startup → systemd `Restart=on-failure` crash-loop → the price-based exits (stop-loss/take-profit) stop running too. A running-but-blind bot still protects open positions; a down bot protects nothing. The bot ran blind Fri 20:54 UTC → Sun 21:39 UTC (15,775 billing-400 errors) and exits fired correctly throughout. Patches needed during an outage: put them on disk, restart only after credits are confirmed.
+- **Void-gap settlement fix shipped + committed (`51f61ff`).** `check_market_resolution` previously only used the gamma fallback on CLOB 404; a CLOB **200 closed=true with no winner flag** (50-50 voids, and ALL sports markets — their token outcomes are team names, never YES/NO) returned None forever. Now falls through to `_resolve_via_gamma`. Verified live: stuck Dota 2 void settled 2s into the first post-restart cycle (+$9.16 payout, −$0.09 PnL).
+- **Deployed == version-controlled as of `51f61ff`** (Friday's audit patches + void-gap, all reviewed hunk-by-hunk before commit). Server tree is clean; only dated `.bak_*` rollback snapshots remain untracked.
+- **The server's GitHub deploy key is READ-ONLY.** To publish server-side commits: commit on the server, then from the Mac `git fetch trooth-server:/home/trooth/Projects/trooth-claude-bot <branch>` and `git push origin FETCH_HEAD:<branch>`. Used for master (`51f61ff`), and for `sports-bot-v1` (published at `7f74ce4`, NOT merged — merge decision waits for the sports final GO call at n≈40–50).
+- **Sports bot: CONDITIONAL GO at n=21** (57.1% hit / +25.80% ROI / +$73.59 favorable gap — variance still dominates). All 5 Phase-5 gate fixes shipped on `sports-bot-v1` (62 tests). Ledger unit now runs an ExecStartPre Elo refresh (9.8s) before the 13:00 UTC settle+log; `--log` prints `Last Elo update`. Never run `--log` manually in the evening against the real CSV — in-game prices produce absurd edges.
+
+Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-08.md`.
+
 ## Running
 
 ### Config file (primary)
