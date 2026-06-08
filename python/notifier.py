@@ -345,6 +345,44 @@ class Notifier:
         )
         self.send(f"⛔ HALTED — {reason}", html)
 
+    def notify_ai_degraded(self, reason: str, portfolio) -> None:
+        """AI providers all failed validation — bot drops to protect-only mode
+        (position review + exits run; no scan/estimate/trade). Auto-resumes
+        when a provider validates on a later cycle."""
+        t = _now()
+        html = _build_html(
+            icon="🛑", title="AI Unavailable — Protect-Only Mode",
+            header_bg=_COLORS["halted"],
+            sections=[
+                {"title": "Degraded Mode", "rows": [
+                    ("Reason", reason, _RED),
+                    ("Status", "Running position-review / exits only (no AI)", _DARK),
+                    ("Open positions", "Still protected by stop-loss / take-profit / resolution", _DARK),
+                    ("Auto-resume", "Re-validates every cycle; full operation resumes when a provider returns", _DARK),
+                ]},
+                _portfolio_section(portfolio),
+            ],
+            time_str=t,
+        )
+        self.send("🛑 AI UNAVAILABLE — protect-only mode", html)
+
+    def notify_ai_recovered(self, portfolio) -> None:
+        """A provider validated again after a protect-only stretch — scan,
+        estimation and trading resume."""
+        t = _now()
+        html = _build_html(
+            icon="✅", title="AI Recovered — Full Operation Resumed",
+            header_bg=_COLORS["started"],
+            sections=[
+                {"title": "Recovery", "rows": [
+                    ("Status", "A provider validated — scanning / estimation / trading resumed", _GREEN),
+                ]},
+                _portfolio_section(portfolio),
+            ],
+            time_str=t,
+        )
+        self.send("✅ AI recovered — full operation resumed", html)
+
     def notify_daily_reset(self, portfolio) -> None:
         t = _now()
         pv = portfolio.bankroll + portfolio.total_exposure()

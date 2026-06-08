@@ -334,8 +334,16 @@ class Portfolio:
         """Close position, return cost basis + PnL to bankroll. Returns realized PnL.
 
         `exit_reason` (added 2026-05-23) feeds the per-condition stop-loss
-        circuit breaker: 'stop_loss' increments the streak, any take_profit
-        variant (or resolved win) clears it. None preserves legacy behavior.
+        circuit breaker. Contract (audit #16, hardened 2026-06-08):
+          - ONLY "stop_loss" increments the streak.
+          - ONLY a take-profit variant ("take_profit", "phased_take_profit_*")
+            or "resolved_won" clears it.
+          - EVERY other exit_reason (operator_close, ghost, edge_gone,
+            max_hold_timeout_*, resolved_lost, None) is an explicit no-op, so
+            operator-script and ghost-cleanup write-paths cannot poison the
+            circuit breaker.
+        Matching is prefix/exact (not substring) so unrelated reasons can't
+        accidentally satisfy the clear condition.
         """
         pos = next((p for p in self.positions if p.condition_id == condition_id), None)
         if pos is None:
@@ -348,10 +356,19 @@ class Portfolio:
         self._recently_closed[condition_id] = time.time()
         self.high_water_mark = max(self.high_water_mark, self.bankroll)
 
-        # Per-condition stop-loss streak bookkeeping.
+        # Per-condition stop-loss streak bookkeeping (audit #16).
+        # Contract: ONLY "stop_loss" increments the streak; ONLY a take-profit
+        # variant or a resolved win clears it. Every other exit_reason
+        # (operator_close, ghost, edge_gone, max_hold_timeout_*, resolved_lost,
+        # None) is an explicit no-op, so the operator-script and ghost-cleanup
+        # write-paths cannot poison the circuit breaker.
         if exit_reason == "stop_loss":
             self._record_stop_loss(condition_id)
-        elif exit_reason and ("take_profit" in exit_reason):
+        elif exit_reason and (
+            exit_reason.startswith("take_profit")
+            or exit_reason.startswith("phased_take_profit")
+            or exit_reason == "resolved_won"
+        ):
             self._clear_stop_streak(condition_id)
 
         log.info(f"Closed {pos.question[:40]}... PnL: ${pnl:+.2f}"

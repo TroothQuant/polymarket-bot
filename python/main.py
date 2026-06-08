@@ -252,17 +252,26 @@ def main():
         log.info("Validating all configured providers...")
     else:
         log.info(f"Validating {config.ai_provider} API key...")
+    # Audit 2026-06-08: AI-degraded resilience. A failed validation must NOT
+    # exit — under systemd Restart=on-failure that crash-loops during a credit
+    # outage and takes the price-based exits (stop-loss/take-profit/resolution)
+    # down with it. Instead drop to PROTECT-ONLY: keep protecting open positions
+    # and re-try validation each cycle to auto-resume.
+    ai_available = True
     if not estimator.validate_api_key():
-        if config.multi_provider:
-            log.error("All configured AI providers failed — no AI available. Exiting.")
-            if con:
-                print(f"[{ts()}] {RED}ERROR: All AI providers failed. Check config.{RESET}")
-        else:
-            log.error(f"{config.ai_provider} API key is invalid or unauthorized. Exiting.")
-            if con:
-                print(f"[{ts()}] {RED}ERROR: {config.ai_provider} API key invalid. Check config.{RESET}")
-        sys.exit(1)
-    if config.multi_provider:
+        ai_available = False
+        reason = ("all configured AI providers failed validation"
+                  if config.multi_provider
+                  else f"{config.ai_provider} API key invalid or unauthorized")
+        log.error(
+            f"AI unavailable ({reason}) — Starting in PROTECT-ONLY mode (no AI) "
+            f"— will retry each cycle"
+        )
+        if con:
+            print(f"[{ts()}] {YELLOW}PROTECT-ONLY MODE: AI unavailable ({reason}). "
+                  f"Exits stay active; retrying each cycle.{RESET}")
+        notifier.notify_ai_degraded(reason, portfolio)
+    elif config.multi_provider:
         log.info("Provider validation complete — at least one provider available.")
     else:
         log.info(f"{config.ai_provider} API key validated.")
@@ -297,6 +306,152 @@ def main():
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
+
+    def run_protective_review(portfolio, trader, scanner, notifier, config, con):
+        """Protective price-based exit/topup pass (audit 2026-06-08 overshoot fix).
+
+        Refreshes held-position prices and runs the Tier-1/1.5 exit + topup
+        logic — identical to the full cycle — factored out so stop-loss /
+        take-profit can also fire BETWEEN full scans, closing the gap-through
+        overshoot. Does NOT scan, estimate, call the AI, or run ghost/resolution.
+        Wrapped in try/except so a transient price-fetch error cannot crash the
+        loop. Returns (n_exits, n_topups).
+        """
+        if not portfolio.positions:
+            return (0, 0)
+        sells_done = 0
+        topups_done = 0
+        try:
+            token_ids = [p.token_id for p in portfolio.positions]
+            if not token_ids:
+                return (0, 0)
+            prices = scanner.get_market_prices(token_ids)
+            portfolio.update_position_prices(prices)
+            # Tier 1: free rule-based exit checks
+            penny_count = sum(1 for p in portfolio.positions if p.current_price < 0.01)
+            tiny_count = sum(1 for p in portfolio.positions if p.current_price >= 0.01 and p.shares < 5.0)
+            exit_signals = portfolio.generate_exit_signals()
+            exits_this_cycle = 0
+
+            skip_parts = []
+            if penny_count > 0:
+                skip_parts.append(f"{penny_count} penny (price<$0.01)")
+            if tiny_count > 0:
+                skip_parts.append(f"{tiny_count} tiny (<5 tokens)")
+            if skip_parts:
+                skip_msg = ", ".join(skip_parts)
+                log.info(f"  Skipping unsellable: {skip_msg}")
+                if con:
+                    print(f"[{ts()}]   {YELLOW}SKIP unsellable: {skip_msg}{RESET}")
+
+            if exit_signals:
+                log.info(f"  Found {len(exit_signals)} exit signals")
+                if con:
+                    print(f"[{ts()}]   Found {len(exit_signals)} exit signal(s)")
+            else:
+                log.info("  No exit signals — all positions OK")
+                if con:
+                    print(f"[{ts()}]   {GREEN}All positions OK, no exits needed{RESET}")
+
+            for es in exit_signals:
+                if not running or portfolio.is_halted:
+                    break
+
+                log.info(
+                    f"  EXIT {es.exit_reason}: {es.position.question[:50]}... "
+                    f"entry={es.position.entry_price:.4f} -> {es.current_price:.4f} "
+                    f"(PnL={es.pnl_pct:+.1%})"
+                )
+                if con:
+                    print(f"[{ts()}]   EXIT ({es.exit_reason}): {es.position.question[:50]}...")
+                    print(f"[{ts()}]     {es.position.entry_price:.4f} -> {es.current_price:.4f} PnL={es.pnl_pct:+.1%}")
+
+                trade = trader.execute_sell(es, portfolio)
+                if trade:
+                    # Re-sync bankroll from on-chain USDC after sell to correct
+                    # partial-fill accounting drift.
+                    if isinstance(trader, LiveTrader):
+                        sell_bal = trader.get_balance()
+                        if sell_bal is not None:
+                            portfolio.sync_balance(sell_bal)
+                            log.info(f"On-chain USDC after sell: ${sell_bal:.2f}")
+                    append_trade(trade, config.data_dir)
+                    save_snapshot(portfolio.snapshot(), config.data_dir)
+                    exits_this_cycle += 1
+                    sells_done += 1
+                    notifier.notify_sell(trade, es.exit_reason, es.pnl_pct, portfolio)
+                    if con:
+                        print(f"[{ts()}]     {GREEN}SOLD OK{RESET}")
+                else:
+                    notifier.notify_sell_fail(es.position, es.exit_reason, "below CLOB minimum or order not filled")
+                    if con:
+                        print(f"[{ts()}]     {RED}SELL FAILED (min 5 tokens or order not filled){RESET}")
+
+            # Tier 1.5: top-up-and-sell for tiny positions with exit signals
+            topup_candidates = portfolio.generate_topup_candidates()
+            if topup_candidates:
+                log.info(f"  Found {len(topup_candidates)} topup candidate(s) (tiny positions with exit signals)")
+                if con:
+                    print(f"[{ts()}]   Found {len(topup_candidates)} topup candidate(s) (buy 5 tokens -> sell all)")
+
+            for tc in topup_candidates:
+                if not running or portfolio.is_halted:
+                    break
+
+                if tc.topup_cost > portfolio.bankroll:
+                    log.info(
+                        f"  SKIP topup: {tc.position.question[:40]}... "
+                        f"cost=${tc.topup_cost:.2f} > bankroll=${portfolio.bankroll:.2f}"
+                    )
+                    if con:
+                        print(
+                            f"[{ts()}]   {YELLOW}SKIP topup: can't afford ${tc.topup_cost:.2f} "
+                            f"(bankroll=${portfolio.bankroll:.2f}){RESET}"
+                        )
+                    continue
+
+                log.info(
+                    f"  TOPUP+SELL ({tc.exit_reason}): {tc.position.question[:40]}... "
+                    f"{tc.position.shares:.2f} tokens, buy 5 more @ {tc.position.current_price:.4f} "
+                    f"(cost=${tc.topup_cost:.2f}, recover=${tc.recovery_value:.2f})"
+                )
+                if con:
+                    print(
+                        f"[{ts()}]   TOPUP ({tc.exit_reason}): {tc.position.question[:40]}..."
+                    )
+                    print(
+                        f"[{ts()}]     {tc.position.shares:.2f} tokens + buy 5 @ {tc.position.current_price:.4f} "
+                        f"(cost=${tc.topup_cost:.2f})"
+                    )
+
+                trade = trader.execute_topup_and_sell(tc, portfolio)
+                if trade:
+                    append_trade(trade, config.data_dir)
+                    save_snapshot(portfolio.snapshot(), config.data_dir)
+                    exits_this_cycle += 1
+                    topups_done += 1
+                    notifier.notify_topup_sell(trade, tc, portfolio)
+                    if con:
+                        print(f"[{ts()}]     {GREEN}TOPUP+SELL OK (freed ${tc.recovery_value:.2f}){RESET}")
+                else:
+                    notifier.notify_topup_sell_fail(tc, "order not filled")
+                    if con:
+                        print(f"[{ts()}]     {RED}TOPUP+SELL FAILED{RESET}")
+
+            if con:
+                print(
+                    f"[{ts()}] REVIEW: {exits_this_cycle} exits, "
+                    f"bankroll=${portfolio.bankroll:.2f}, "
+                    f"{len(portfolio.positions)} positions remaining"
+                )
+            if sells_done + topups_done > 0:
+                save_snapshot(portfolio.snapshot(), config.data_dir)
+        except Exception as e:
+            log.warning(f"protective review error (positions still held): {e}")
+            return (sells_done, topups_done)
+        log.info(f"protective review: {sells_done} exit(s), {topups_done} topup(s)")
+        return (sells_done, topups_done)
+
 
     last_daily_reset = datetime.now(timezone.utc).date()
     cycle = 0
@@ -477,335 +632,240 @@ def main():
                 if con:
                     print(f"[{ts()}]   {resolved_count} market(s) resolved, bankroll now ${portfolio.bankroll:.2f}")
 
-            # Tier 1: free rule-based exit checks
-            penny_count = sum(1 for p in portfolio.positions if p.current_price < 0.01)
-            tiny_count = sum(1 for p in portfolio.positions if p.current_price >= 0.01 and p.shares < 5.0)
-            exit_signals = portfolio.generate_exit_signals()
-            exits_this_cycle = 0
-
-            skip_parts = []
-            if penny_count > 0:
-                skip_parts.append(f"{penny_count} penny (price<$0.01)")
-            if tiny_count > 0:
-                skip_parts.append(f"{tiny_count} tiny (<5 tokens)")
-            if skip_parts:
-                skip_msg = ", ".join(skip_parts)
-                log.info(f"  Skipping unsellable: {skip_msg}")
-                if con:
-                    print(f"[{ts()}]   {YELLOW}SKIP unsellable: {skip_msg}{RESET}")
-
-            if exit_signals:
-                log.info(f"  Found {len(exit_signals)} exit signals")
-                if con:
-                    print(f"[{ts()}]   Found {len(exit_signals)} exit signal(s)")
-            else:
-                log.info("  No exit signals — all positions OK")
-                if con:
-                    print(f"[{ts()}]   {GREEN}All positions OK, no exits needed{RESET}")
-
-            for es in exit_signals:
-                if not running or portfolio.is_halted:
-                    break
-
-                log.info(
-                    f"  EXIT {es.exit_reason}: {es.position.question[:50]}... "
-                    f"entry={es.position.entry_price:.4f} -> {es.current_price:.4f} "
-                    f"(PnL={es.pnl_pct:+.1%})"
-                )
-                if con:
-                    print(f"[{ts()}]   EXIT ({es.exit_reason}): {es.position.question[:50]}...")
-                    print(f"[{ts()}]     {es.position.entry_price:.4f} -> {es.current_price:.4f} PnL={es.pnl_pct:+.1%}")
-
-                trade = trader.execute_sell(es, portfolio)
-                if trade:
-                    # Re-sync bankroll from on-chain USDC after sell to correct
-                    # partial-fill accounting drift.
-                    if isinstance(trader, LiveTrader):
-                        sell_bal = trader.get_balance()
-                        if sell_bal is not None:
-                            portfolio.sync_balance(sell_bal)
-                            log.info(f"On-chain USDC after sell: ${sell_bal:.2f}")
-                    append_trade(trade, config.data_dir)
-                    save_snapshot(portfolio.snapshot(), config.data_dir)
-                    exits_this_cycle += 1
-                    notifier.notify_sell(trade, es.exit_reason, es.pnl_pct, portfolio)
-                    if con:
-                        print(f"[{ts()}]     {GREEN}SOLD OK{RESET}")
-                else:
-                    notifier.notify_sell_fail(es.position, es.exit_reason, "below CLOB minimum or order not filled")
-                    if con:
-                        print(f"[{ts()}]     {RED}SELL FAILED (min 5 tokens or order not filled){RESET}")
-
-            # Tier 1.5: top-up-and-sell for tiny positions with exit signals
-            topup_candidates = portfolio.generate_topup_candidates()
-            if topup_candidates:
-                log.info(f"  Found {len(topup_candidates)} topup candidate(s) (tiny positions with exit signals)")
-                if con:
-                    print(f"[{ts()}]   Found {len(topup_candidates)} topup candidate(s) (buy 5 tokens -> sell all)")
-
-            for tc in topup_candidates:
-                if not running or portfolio.is_halted:
-                    break
-
-                if tc.topup_cost > portfolio.bankroll:
-                    log.info(
-                        f"  SKIP topup: {tc.position.question[:40]}... "
-                        f"cost=${tc.topup_cost:.2f} > bankroll=${portfolio.bankroll:.2f}"
-                    )
-                    if con:
-                        print(
-                            f"[{ts()}]   {YELLOW}SKIP topup: can't afford ${tc.topup_cost:.2f} "
-                            f"(bankroll=${portfolio.bankroll:.2f}){RESET}"
-                        )
-                    continue
-
-                log.info(
-                    f"  TOPUP+SELL ({tc.exit_reason}): {tc.position.question[:40]}... "
-                    f"{tc.position.shares:.2f} tokens, buy 5 more @ {tc.position.current_price:.4f} "
-                    f"(cost=${tc.topup_cost:.2f}, recover=${tc.recovery_value:.2f})"
-                )
-                if con:
-                    print(
-                        f"[{ts()}]   TOPUP ({tc.exit_reason}): {tc.position.question[:40]}..."
-                    )
-                    print(
-                        f"[{ts()}]     {tc.position.shares:.2f} tokens + buy 5 @ {tc.position.current_price:.4f} "
-                        f"(cost=${tc.topup_cost:.2f})"
-                    )
-
-                trade = trader.execute_topup_and_sell(tc, portfolio)
-                if trade:
-                    append_trade(trade, config.data_dir)
-                    save_snapshot(portfolio.snapshot(), config.data_dir)
-                    exits_this_cycle += 1
-                    notifier.notify_topup_sell(trade, tc, portfolio)
-                    if con:
-                        print(f"[{ts()}]     {GREEN}TOPUP+SELL OK (freed ${tc.recovery_value:.2f}){RESET}")
-                else:
-                    notifier.notify_topup_sell_fail(tc, "order not filled")
-                    if con:
-                        print(f"[{ts()}]     {RED}TOPUP+SELL FAILED{RESET}")
-
-            if con:
-                print(
-                    f"[{ts()}] REVIEW: {exits_this_cycle} exits, "
-                    f"bankroll=${portfolio.bankroll:.2f}, "
-                    f"{len(portfolio.positions)} positions remaining"
-                )
+            # Tier 1 + 1.5: protective price-based exits + tiny-position topups.
+            # Extracted to run_protective_review() (audit 2026-06-08 overshoot fix)
+            # so the same exit logic also fires between full scans. Ghost +
+            # resolution above remain inline (full-cycle only).
+            run_protective_review(portfolio, trader, scanner, notifier, config, con)
 
         try:
-            # Skip scan entirely if bankroll can't fund the smallest possible trade.
-            # Saves ~10s Gamma API call when no trade is possible.
-            min_pos_pre = config.max_position_pct * portfolio.bankroll
-            min_required = max(min_pos_pre, config.min_trade_usd)
             trades_this_cycle = 0
+            if ai_available:
+                # Skip scan entirely if bankroll can't fund the smallest possible trade.
+                # Saves ~10s Gamma API call when no trade is possible.
+                min_pos_pre = config.max_position_pct * portfolio.bankroll
+                min_required = max(min_pos_pre, config.min_trade_usd)
+                trades_this_cycle = 0
 
-            if portfolio.bankroll < min_required:
-                log.info(
-                    f"Bankroll ${portfolio.bankroll:.2f} too low to trade "
-                    f"(min ~${min_required:.2f}) — skipping scan"
-                )
-                if con:
-                    print(f"[{ts()}] SCAN SKIP: bankroll ${portfolio.bankroll:.2f} < min ${min_required:.2f}")
-                markets = []
-                eligible = []
-            else:
-                log.info("Scanning markets...")
-                if con:
-                    print(f"[{ts()}] SCAN: fetching markets...")
-                markets = scanner.scan()
-
-                # Phase-aware time-to-resolution filter + short-resolution rerank
-                # (added 2026-05-19). At small bankroll, the bot can't afford to
-                # lock capital in 200-day positions. Cap entries at the same window
-                # the phased-exit timeout would close them at anyway.
-                portfolio_value = portfolio.bankroll + portfolio.total_exposure()
-                if portfolio_value < config.phase1_threshold:
-                    max_hours_cap = config.max_time_to_resolution_hours_phase1
-                    prefer_short = True
-                elif portfolio_value < config.phase2_threshold:
-                    max_hours_cap = config.max_time_to_resolution_hours_phase2
-                    prefer_short = True
+                if portfolio.bankroll < min_required:
+                    log.info(
+                        f"Bankroll ${portfolio.bankroll:.2f} too low to trade "
+                        f"(min ~${min_required:.2f}) — skipping scan"
+                    )
+                    if con:
+                        print(f"[{ts()}] SCAN SKIP: bankroll ${portfolio.bankroll:.2f} < min ${min_required:.2f}")
+                    markets = []
+                    eligible = []
                 else:
-                    max_hours_cap = 0.0
-                    prefer_short = False
-
-                pre_filter_count = len(markets)
-                if max_hours_cap and max_hours_cap > 0:
-                    markets = _filter_by_max_time_to_resolution(markets, max_hours_cap)
-                if prefer_short:
-                    markets = _rank_short_resolution_first(markets)
-                dropped_by_time = pre_filter_count - len(markets)
-                if dropped_by_time:
-                    log.info(
-                        f"Phase filter: dropped {dropped_by_time} markets resolving > "
-                        f"{max_hours_cap/24:.0f} days out (portfolio_value=${portfolio_value:.0f})"
-                    )
-
-                eligible = markets[:config.markets_per_cycle]
-
-                if con:
-                    print(f"[{ts()}] SCAN: {len(markets)} total, evaluating top {len(eligible)}")
-
-            # Pre-check: skip estimation entirely if exposure is at the limit
-            # Use portfolio value (bankroll + exposure) as base, not just bankroll
-            pv = portfolio.bankroll + portfolio.total_exposure()
-            exposure_room = config.max_total_exposure_pct * pv - portfolio.total_exposure()
-            min_realistic_position = config.max_position_pct * pv * 0.5
-            # Also can't trade more than available cash
-            exposure_room = min(exposure_room, portfolio.bankroll)
-            at_capacity = exposure_room < min_realistic_position
-            if at_capacity:
-                log.info(
-                    f"Exposure near limit: room=${exposure_room:.2f} < min realistic position=${min_realistic_position:.2f} — skipping estimation to save API costs"
-                )
-                if con:
-                    print(f"[{ts()}] EXPOSURE FULL: room=${exposure_room:.2f} < ${min_realistic_position:.2f}, skipping evaluations")
-
-            for i, market in enumerate(eligible, 1):
-                if not running or portfolio.is_halted:
-                    break
-
-                # Skip markets we already hold
-                if portfolio.has_position(market.condition_id):
-                    log.info(f"  [{i}/{len(eligible)}] SKIP (already held): {market.question[:60]}")
+                    log.info("Scanning markets...")
                     if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] SKIP (held): {market.question[:55]}")
-                    continue
+                        print(f"[{ts()}] SCAN: fetching markets...")
+                    markets = scanner.scan()
 
-                # Skip estimation entirely if at exposure limit (saves API costs)
-                if at_capacity:
-                    continue
+                    # Phase-aware time-to-resolution filter + short-resolution rerank
+                    # (added 2026-05-19). At small bankroll, the bot can't afford to
+                    # lock capital in 200-day positions. Cap entries at the same window
+                    # the phased-exit timeout would close them at anyway.
+                    portfolio_value = portfolio.bankroll + portfolio.total_exposure()
+                    if portfolio_value < config.phase1_threshold:
+                        max_hours_cap = config.max_time_to_resolution_hours_phase1
+                        prefer_short = True
+                    elif portfolio_value < config.phase2_threshold:
+                        max_hours_cap = config.max_time_to_resolution_hours_phase2
+                        prefer_short = True
+                    else:
+                        max_hours_cap = 0.0
+                        prefer_short = False
 
-                # Skip estimation if bankroll too low to cover API costs this cycle.
-                # Bot continues running for position review; resumes when USDC returns.
-                MIN_API_RESERVE = 0.30
-                if portfolio.bankroll < MIN_API_RESERVE:
-                    log.info(
-                        f"  Bankroll ${portfolio.bankroll:.2f} < ${MIN_API_RESERVE:.2f} reserve "
-                        f"— stopping estimation this cycle"
-                    )
-                    if con:
-                        print(f"[{ts()}]   API RESERVE LOW (${portfolio.bankroll:.2f}) — skipping remaining evaluations")
-                    break
-
-                # Skip estimation if we can't afford the CLOB minimum for either side.
-                # Use effective price (+ 0.02 for 2-tick BUY aggression) so we don't call Claude
-                # only to fail at order execution when the actual order price exceeds our cash.
-                best_price = min(market.outcome_yes_price, market.outcome_no_price)
-                min_clob_cost = max(5.0 * (best_price + 0.02), 1.0)
-                if portfolio.bankroll < min_clob_cost:
-                    log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (can't afford CLOB min ${min_clob_cost:.2f}): "
-                        f"{market.question[:50]}"
-                    )
-                    if con:
-                        print(
-                            f"[{ts()}]   [{i:>2}/{len(eligible)}] SKIP (need ${min_clob_cost:.2f} "
-                            f"for 5 tokens, have ${portfolio.bankroll:.2f})"
+                    pre_filter_count = len(markets)
+                    if max_hours_cap and max_hours_cap > 0:
+                        markets = _filter_by_max_time_to_resolution(markets, max_hours_cap)
+                    if prefer_short:
+                        markets = _rank_short_resolution_first(markets)
+                    dropped_by_time = pre_filter_count - len(markets)
+                    if dropped_by_time:
+                        log.info(
+                            f"Phase filter: dropped {dropped_by_time} markets resolving > "
+                            f"{max_hours_cap/24:.0f} days out (portfolio_value=${portfolio_value:.0f})"
                         )
-                    continue
 
-                # Estimate fair value
-                log.info(f"  [{i}/{len(eligible)}] Evaluating: {market.question[:60]}...")
+                    eligible = markets[:config.markets_per_cycle]
+
+                    if con:
+                        print(f"[{ts()}] SCAN: {len(markets)} total, evaluating top {len(eligible)}")
+
+                # Pre-check: skip estimation entirely if exposure is at the limit
+                # Use portfolio value (bankroll + exposure) as base, not just bankroll
+                pv = portfolio.bankroll + portfolio.total_exposure()
+                exposure_room = config.max_total_exposure_pct * pv - portfolio.total_exposure()
+                min_realistic_position = config.max_position_pct * pv * 0.5
+                # Also can't trade more than available cash
+                exposure_room = min(exposure_room, portfolio.bankroll)
+                at_capacity = exposure_room < min_realistic_position
+                if at_capacity:
+                    log.info(
+                        f"Exposure near limit: room=${exposure_room:.2f} < min realistic position=${min_realistic_position:.2f} — skipping estimation to save API costs"
+                    )
+                    if con:
+                        print(f"[{ts()}] EXPOSURE FULL: room=${exposure_room:.2f} < ${min_realistic_position:.2f}, skipping evaluations")
+
+                for i, market in enumerate(eligible, 1):
+                    if not running or portfolio.is_halted:
+                        break
+
+                    # Skip markets we already hold
+                    if portfolio.has_position(market.condition_id):
+                        log.info(f"  [{i}/{len(eligible)}] SKIP (already held): {market.question[:60]}")
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] SKIP (held): {market.question[:55]}")
+                        continue
+
+                    # Skip estimation entirely if at exposure limit (saves API costs)
+                    if at_capacity:
+                        continue
+
+                    # Skip estimation if bankroll too low to cover API costs this cycle.
+                    # Bot continues running for position review; resumes when USDC returns.
+                    MIN_API_RESERVE = 0.30
+                    if portfolio.bankroll < MIN_API_RESERVE:
+                        log.info(
+                            f"  Bankroll ${portfolio.bankroll:.2f} < ${MIN_API_RESERVE:.2f} reserve "
+                            f"— stopping estimation this cycle"
+                        )
+                        if con:
+                            print(f"[{ts()}]   API RESERVE LOW (${portfolio.bankroll:.2f}) — skipping remaining evaluations")
+                        break
+
+                    # Skip estimation if we can't afford the CLOB minimum for either side.
+                    # Use effective price (+ 0.02 for 2-tick BUY aggression) so we don't call Claude
+                    # only to fail at order execution when the actual order price exceeds our cash.
+                    best_price = min(market.outcome_yes_price, market.outcome_no_price)
+                    min_clob_cost = max(5.0 * (best_price + 0.02), 1.0)
+                    if portfolio.bankroll < min_clob_cost:
+                        log.info(
+                            f"  [{i}/{len(eligible)}] SKIP (can't afford CLOB min ${min_clob_cost:.2f}): "
+                            f"{market.question[:50]}"
+                        )
+                        if con:
+                            print(
+                                f"[{ts()}]   [{i:>2}/{len(eligible)}] SKIP (need ${min_clob_cost:.2f} "
+                                f"for 5 tokens, have ${portfolio.bankroll:.2f})"
+                            )
+                        continue
+
+                    # Estimate fair value
+                    log.info(f"  [{i}/{len(eligible)}] Evaluating: {market.question[:60]}...")
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
+                    estimate = estimator.estimate(market)
+                    if estimate is None:
+                        # Audit 2026-05-19 HIGH #25: even a failed estimation
+                        # may have spent tokens (multi-provider mode in
+                        # particular). Drain whatever the estimator accumulated
+                        # and bill the bankroll so the API budget guard reflects
+                        # the true spend.
+                        fail_in, fail_out = estimator.consume_last_tokens()
+                        if fail_in or fail_out:
+                            portfolio.record_api_cost(fail_in, fail_out)
+                        log.info(
+                            f"  [{i}/{len(eligible)}] SKIP (estimation failed; "
+                            f"recorded {fail_in} in / {fail_out} out tokens)"
+                        )
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
+                        continue
+
+                    # Agent pays for its own inference (also drain counters so
+                    # subsequent failed estimates don't double-bill).
+                    portfolio.record_api_cost(estimate.input_tokens_used, estimate.output_tokens_used)
+                    estimator.consume_last_tokens()
+
+                    # Only halt if total portfolio value is truly depleted
+                    if portfolio.bankroll + portfolio.total_exposure() < 1.0:
+                        log.warning("Portfolio value < $1 — agent is dead")
+                        if con:
+                            print(f"[{ts()}] {RED}DEAD: portfolio value depleted{RESET}")
+                        portfolio.is_halted = True
+                        notifier.notify_halted("Portfolio value < $1 — agent is dead", portfolio)
+                        break
+
+                    # Generate signal
+                    signal_obj = portfolio.generate_signal(market, estimate)
+                    if signal_obj is None:
+                        yes_edge = estimate.fair_probability - market.outcome_yes_price
+                        no_edge = (1.0 - estimate.fair_probability) - market.outcome_no_price
+                        best_edge = max(yes_edge, no_edge)
+                        log.info(
+                            f"  [{i}/{len(eligible)}] SKIP (no edge): "
+                            f"fair={estimate.fair_probability:.1%} vs market={market.outcome_yes_price:.1%} "
+                            f"(edge={best_edge:+.1%}, need>{config.min_edge:.0%})"
+                        )
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} (edge={best_edge:+.1%}) SKIP")
+                        continue
+
+                    # Risk check
+                    if not portfolio.check_risk(signal_obj):
+                        log.info(
+                            f"  [{i}/{len(eligible)}] SKIP (risk limit): "
+                            f"{signal_obj.side.value} {market.question[:40]}... "
+                            f"${signal_obj.position_size_usd:.2f}"
+                        )
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} {YELLOW}RISK BLOCKED{RESET}")
+                        continue
+
+                    # Execute
+                    log.info(
+                        f"  [{i}/{len(eligible)}] >>> BUYING {signal_obj.side.value} "
+                        f"{market.question[:50]}... ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}"
+                    )
+                    if con:
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
+                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}...")
+
+                    trade = trader.execute(signal_obj, portfolio)
+                    if trade:
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] {GREEN}TRADE OK{RESET} (EV=${signal_obj.expected_value:.2f})")
+
+                        # Re-sync bankroll from on-chain USDC after each trade.
+                        if isinstance(trader, LiveTrader):
+                            bal = trader.get_balance()
+                            if bal is not None:
+                                portfolio.sync_balance(bal)
+                                log.info(f"On-chain USDC after trade: ${bal:.2f}")
+                                if con:
+                                    print(f"[{ts()}]   USDC balance: ${bal:.2f}")
+
+                        append_trade(trade, config.data_dir)
+                        save_snapshot(portfolio.snapshot(), config.data_dir)
+                        trades_this_cycle += 1
+                        notifier.notify_trade(trade, signal_obj, portfolio)
+
+                        log.info(
+                            f"  [{i}/{len(eligible)}] TRADE OK: {trade.side.value} {market.question[:50]}... "
+                            f"${trade.size_usd:.2f} @ {trade.price:.3f} "
+                            f"(edge={signal_obj.edge:.1%}, EV=${signal_obj.expected_value:.2f})"
+                        )
+                    else:
+                        log.warning(f"  [{i}/{len(eligible)}] TRADE FAILED: order execution error")
+                        notifier.notify_buy_fail(market, signal_obj, "order execution error")
+                        if con:
+                            print(f"[{ts()}]   [{i:>2}/{len(eligible)}] {RED}TRADE FAILED{RESET}")
+
+            else:
+                log.info("AI unavailable — protect-only cycle (exits still active)")
                 if con:
-                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] EVAL: {market.question[:55]}...")
-                estimate = estimator.estimate(market)
-                if estimate is None:
-                    # Audit 2026-05-19 HIGH #25: even a failed estimation
-                    # may have spent tokens (multi-provider mode in
-                    # particular). Drain whatever the estimator accumulated
-                    # and bill the bankroll so the API budget guard reflects
-                    # the true spend.
-                    fail_in, fail_out = estimator.consume_last_tokens()
-                    if fail_in or fail_out:
-                        portfolio.record_api_cost(fail_in, fail_out)
-                    log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (estimation failed; "
-                        f"recorded {fail_in} in / {fail_out} out tokens)"
-                    )
+                    print(f"[{ts()}] {YELLOW}AI unavailable — protect-only cycle (exits still active){RESET}")
+                # Audit 2026-06-08: one re-validation per cycle; recover the
+                # moment a provider returns, then resume full operation.
+                if estimator.validate_api_key():
+                    ai_available = True
+                    log.info("AI recovered — resuming full operation")
                     if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {RED}FAILED{RESET}")
-                    continue
-
-                # Agent pays for its own inference (also drain counters so
-                # subsequent failed estimates don't double-bill).
-                portfolio.record_api_cost(estimate.input_tokens_used, estimate.output_tokens_used)
-                estimator.consume_last_tokens()
-
-                # Only halt if total portfolio value is truly depleted
-                if portfolio.bankroll + portfolio.total_exposure() < 1.0:
-                    log.warning("Portfolio value < $1 — agent is dead")
-                    if con:
-                        print(f"[{ts()}] {RED}DEAD: portfolio value depleted{RESET}")
-                    portfolio.is_halted = True
-                    notifier.notify_halted("Portfolio value < $1 — agent is dead", portfolio)
-                    break
-
-                # Generate signal
-                signal_obj = portfolio.generate_signal(market, estimate)
-                if signal_obj is None:
-                    yes_edge = estimate.fair_probability - market.outcome_yes_price
-                    no_edge = (1.0 - estimate.fair_probability) - market.outcome_no_price
-                    best_edge = max(yes_edge, no_edge)
-                    log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (no edge): "
-                        f"fair={estimate.fair_probability:.1%} vs market={market.outcome_yes_price:.1%} "
-                        f"(edge={best_edge:+.1%}, need>{config.min_edge:.0%})"
-                    )
-                    if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} (edge={best_edge:+.1%}) SKIP")
-                    continue
-
-                # Risk check
-                if not portfolio.check_risk(signal_obj):
-                    log.info(
-                        f"  [{i}/{len(eligible)}] SKIP (risk limit): "
-                        f"{signal_obj.side.value} {market.question[:40]}... "
-                        f"${signal_obj.position_size_usd:.2f}"
-                    )
-                    if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} {YELLOW}RISK BLOCKED{RESET}")
-                    continue
-
-                # Execute
-                log.info(
-                    f"  [{i}/{len(eligible)}] >>> BUYING {signal_obj.side.value} "
-                    f"{market.question[:50]}... ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}"
-                )
-                if con:
-                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] -> {estimate.fair_probability:.0%} edge={signal_obj.edge:.1%}")
-                    print(f"[{ts()}]   [{i:>2}/{len(eligible)}] >>> BUY {signal_obj.side.value} ${signal_obj.position_size_usd:.2f} @ {signal_obj.market_price:.3f}...")
-
-                trade = trader.execute(signal_obj, portfolio)
-                if trade:
-                    if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] {GREEN}TRADE OK{RESET} (EV=${signal_obj.expected_value:.2f})")
-
-                    # Re-sync bankroll from on-chain USDC after each trade.
-                    if isinstance(trader, LiveTrader):
-                        bal = trader.get_balance()
-                        if bal is not None:
-                            portfolio.sync_balance(bal)
-                            log.info(f"On-chain USDC after trade: ${bal:.2f}")
-                            if con:
-                                print(f"[{ts()}]   USDC balance: ${bal:.2f}")
-
-                    append_trade(trade, config.data_dir)
-                    save_snapshot(portfolio.snapshot(), config.data_dir)
-                    trades_this_cycle += 1
-                    notifier.notify_trade(trade, signal_obj, portfolio)
-
-                    log.info(
-                        f"  [{i}/{len(eligible)}] TRADE OK: {trade.side.value} {market.question[:50]}... "
-                        f"${trade.size_usd:.2f} @ {trade.price:.3f} "
-                        f"(edge={signal_obj.edge:.1%}, EV=${signal_obj.expected_value:.2f})"
-                    )
-                else:
-                    log.warning(f"  [{i}/{len(eligible)}] TRADE FAILED: order execution error")
-                    notifier.notify_buy_fail(market, signal_obj, "order execution error")
-                    if con:
-                        print(f"[{ts()}]   [{i:>2}/{len(eligible)}] {RED}TRADE FAILED{RESET}")
+                        print(f"[{ts()}] {GREEN}AI RECOVERED — full operation resumed{RESET}")
+                    notifier.notify_ai_recovered(portfolio)
 
             # Cycle summary
             log.info(
@@ -847,15 +907,25 @@ def main():
                 print(f"\n[{ts()}] {RED}ERROR: {e}{RESET}")
             notifier.notify_error(cycle, e)
 
-        # Sleep in 1-second ticks for responsive shutdown
+        # Sleep in 1-second ticks for responsive shutdown, running a protective
+        # price-based exit review every review_interval_seconds so stop-loss /
+        # take-profit can fire between full scans (audit 2026-06-08 overshoot fix).
         if running:
-            log.info(f"Next scan in {config.scan_interval_minutes} min")
+            log.info(
+                f"Next scan in {config.scan_interval_minutes} min "
+                f"(protective review every {config.review_interval_seconds}s)"
+            )
             if con:
-                print(f"[{ts()}] WAIT: sleeping {config.scan_interval_minutes} min...")
-            for _ in range(config.scan_interval_minutes * 60):
+                print(f"[{ts()}] WAIT: sleeping {config.scan_interval_minutes} min "
+                      f"(protective review every {config.review_interval_seconds}s)...")
+            total_ticks = config.scan_interval_minutes * 60
+            for tick in range(1, total_ticks + 1):
                 if not running:
                     break
                 time.sleep(1)
+                if (running and config.review_interval_seconds > 0
+                        and tick % config.review_interval_seconds == 0):
+                    run_protective_review(portfolio, trader, scanner, notifier, config, con)
 
     # Final save
     save_snapshot(portfolio.snapshot(), config.data_dir)

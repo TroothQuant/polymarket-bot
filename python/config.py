@@ -103,6 +103,7 @@ class BotConfig:
     exit_edge_buffer: float = 0.05
     review_reestimate_threshold_pct: float = 0.10
     review_ensemble_size: int = 3
+    review_interval_seconds: int = 90   # protective price-based exit review cadence between full scans
 
     # Per-condition stop-loss circuit breaker (added 2026-05-23 after the
     # Iran NO bleed pattern: bot took 5 stop-losses on Iran peace-deal NO
@@ -256,6 +257,7 @@ class BotConfig:
             exit_edge_buffer=get("exit_edge_buffer", 0.05),
             review_reestimate_threshold_pct=get("review_reestimate_threshold_pct", 0.10),
             review_ensemble_size=get("review_ensemble_size", 3),
+            review_interval_seconds=get("review_interval_seconds", 90),
             stop_pause_threshold=get("stop_pause_threshold", 2),
             stop_pause_window_hours=get("stop_pause_window_hours", 24.0),
             stop_pause_extra_hours=get("stop_pause_extra_hours", 48.0),
