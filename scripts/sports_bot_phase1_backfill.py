@@ -70,7 +70,7 @@ def iter_season_games(season: int) -> list[dict]:
         raw.extend(chunk)
         time.sleep(0.2)  # polite throttle
     rows = []
-    now_iso = dt.datetime.utcnow().isoformat() + "Z"
+    now_iso = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
     for g in raw:
         # Schema fields per statsapi.schedule() output
         status = g.get("status", "")
@@ -105,7 +105,7 @@ def iter_season_games(season: int) -> list[dict]:
 def reset_elo_state(con, season: int, team_ids: list[int]) -> None:
     """Initialize Elo state at BASE_RATING for every team for a given season.
     Idempotent: re-running overwrites prior state for that season."""
-    now_iso = dt.datetime.utcnow().isoformat() + "Z"
+    now_iso = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
     for tid in team_ids:
         cache.upsert_elo(con, tid, season, elo.BASE_RATING, 0, None, now_iso)
 
@@ -114,7 +114,7 @@ def carry_forward_elo(con, from_season: int, to_season: int,
                       team_ids: list[int]) -> None:
     """Apply season-boundary carryover (75% regression to 1500) and seed the new
     season with the regressed ratings."""
-    now_iso = dt.datetime.utcnow().isoformat() + "Z"
+    now_iso = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
     for tid in team_ids:
         prior = cache.get_elo(con, tid, from_season)
         prior_rating = prior["rating"] if prior else elo.BASE_RATING
@@ -156,7 +156,7 @@ def apply_games_to_elo(con, games: list[dict], season: int) -> dict:
         new_home, new_away = elo.update_after_game(home_state, away_state,
                                                     g["home_score"], g["away_score"],
                                                     g["game_pk"])
-        now_iso = dt.datetime.utcnow().isoformat() + "Z"
+        now_iso = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
         cache.upsert_elo(con, new_home.team_id, season, new_home.rating,
                          new_home.games_played, new_home.last_updated_game_pk, now_iso)
         cache.upsert_elo(con, new_away.team_id, season, new_away.rating,
