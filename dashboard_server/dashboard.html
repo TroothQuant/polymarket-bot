@@ -93,6 +93,13 @@
     padding: 4px 12px; border-radius: 5px; cursor: pointer; font-size: 11px; font-family: var(--mono);
   }
   .range-buttons button.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .rf-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+  .rf-row .rf-lbl { font-size: 10px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.5px; min-width: 52px; }
+  .rf-chip { background: var(--bg-elev-2); color: var(--fg-mute); border: 1px solid var(--border);
+    border-radius: 4px; font-size: 10px; padding: 1px 6px; cursor: pointer; font-family: var(--mono); user-select: none; }
+  .rf-chip:hover { border-color: var(--accent); }
+  .rf-chip.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .rf-row.disabled { opacity: 0.4; pointer-events: none; }
   .chart-canvas-wrap { height: 220px; position: relative; }
 
   /* Main two-column */
@@ -272,7 +279,9 @@
 
 <section class="kpi-strip">
   <div class="kpi"><div class="label">Portfolio Value</div><div class="value" id="kpi-total-value">—</div><div class="sub" id="kpi-total-value-sub"></div></div>
-  <div class="kpi"><div class="label">Realized P&L</div><div class="value" id="kpi-realized">—</div><div class="sub">across all closed trades</div></div>
+  <div class="kpi"><div class="label">Realized P&L</div><div class="value" id="kpi-realized">—</div><div class="sub" id="kpi-realized-sub">across all closed trades</div>
+    <div class="rf-row" id="rf-bot-row"><span class="rf-lbl">Bot</span><span class="rf-chip active" data-rf="bot" data-val="all">All</span><span class="rf-chip" data-rf="bot" data-val="claude">Claude</span><span class="rf-chip" data-rf="bot" data-val="weather">Weather</span></div>
+    <div class="rf-row" id="rf-platform-row"><span class="rf-lbl">Platform</span><span class="rf-chip active" data-rf="platform" data-val="all">All</span><span class="rf-chip" data-rf="platform" data-val="polymarket">Polymarket</span><span class="rf-chip" data-rf="platform" data-val="kalshi">Kalshi</span></div></div>
   <div class="kpi"><div class="label">Unrealized P&L</div><div class="value" id="kpi-unrealized">—</div><div class="sub">open positions</div></div>
   <div class="kpi"><div class="label">Total Exposure</div><div class="value" id="kpi-exposure">—</div><div class="sub" id="kpi-exposure-sub"></div></div>
   <div class="kpi"><div class="label">Real API Spend</div><div class="value" id="kpi-apispend">—</div><div class="sub">claude bot only</div></div>
@@ -344,6 +353,52 @@
 const CLAUDE_INITIAL = 200.00;
 
 let currentRange = "24h";
+let realizedBotFilter = "all";
+let realizedPlatformFilter = "all";
+let lastClaudePortfolio = null;
+let lastWeatherStats = null;
+
+function realizedFor(bot, platform) {
+  const cReal = lastClaudePortfolio?.total_realized_pnl ?? 0;            // Claude = Polymarket only
+  const wbp   = lastWeatherStats?.weather_pnl_by_platform;
+  const wPoly = wbp?.polymarket ?? (lastWeatherStats?.total_pnl ?? 0);
+  const wKal  = wbp?.kalshi ?? 0;
+  let total = 0;
+  const inClaude  = (bot === "all" || bot === "claude");
+  const inWeather = (bot === "all" || bot === "weather");
+  if (inClaude  && (platform === "all" || platform === "polymarket")) total += cReal;   // Claude has no Kalshi
+  if (inWeather && (platform === "all" || platform === "polymarket")) total += wPoly;
+  if (inWeather && (platform === "all" || platform === "kalshi"))     total += wKal;
+  return total;
+}
+
+function realizedSubLabel() {
+  if (realizedBotFilter === "all" && realizedPlatformFilter === "all") return "across all closed trades";
+  const botName = realizedBotFilter === "all" ? "Claude + Weather"
+                : realizedBotFilter === "claude" ? "Claude" : "Weather";
+  const platName = realizedPlatformFilter === "all" ? "All platforms"
+                 : realizedPlatformFilter === "polymarket" ? "Polymarket" : "Kalshi";
+  return botName + " · " + platName;
+}
+
+function applyRealizedFilter() {
+  // Guard (#3e): if weather has no per-platform breakdown, disable the Platform row.
+  const hasBreakdown = !!(lastWeatherStats && lastWeatherStats.weather_pnl_by_platform);
+  const platRow = document.getElementById("rf-platform-row");
+  if (platRow) {
+    platRow.classList.toggle("disabled", !hasBreakdown);
+    if (!hasBreakdown) realizedPlatformFilter = "all";
+  }
+  const v = realizedFor(realizedBotFilter, realizedPlatformFilter);
+  const el = document.getElementById("kpi-realized");
+  if (el) {
+    el.textContent = fmtSigned(v);
+    el.classList.remove("pos", "neg");
+    if (v > 0.005) el.classList.add("pos"); else if (v < -0.005) el.classList.add("neg");
+  }
+  const sub = document.getElementById("kpi-realized-sub");
+  if (sub) sub.textContent = realizedSubLabel();
+}
 let pnlChart = null;
 
 // ── formatting helpers ──────────────────────────────────────────────────
@@ -399,6 +454,7 @@ async function fetchJSON(path) {
 
 // ── KPI computation ─────────────────────────────────────────────────────
 function renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions) {
+  lastClaudePortfolio = claudePortfolio; lastWeatherStats = weatherStats;
   // Weather
   const wBank = weatherStats?.bankroll ?? 0;
   const wPositions = weatherPositions || [];
@@ -437,8 +493,7 @@ function renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositi
   setText("kpi-total-value", fmtUsd(totalValue));
   setText("kpi-total-value-sub", `weather $${(wBank + wExposure + wUnrealized).toFixed(0)} + claude $${(cBank + cExposure + cUnrealized).toFixed(2)}`);
 
-  setText("kpi-realized", fmtSigned(totalRealized));
-  setSign("kpi-realized", totalRealized);
+  applyRealizedFilter();   // respects current Bot/Platform filter (recomputes on each refresh)
 
   setText("kpi-unrealized", fmtSigned(totalUnrealized));
   setSign("kpi-unrealized", totalUnrealized);
@@ -928,6 +983,16 @@ document.querySelectorAll(".range-buttons button").forEach(btn => {
     btn.classList.add("active");
     currentRange = btn.dataset.range;
     renderChart();
+  });
+});
+
+document.querySelectorAll(".rf-chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    const rf = chip.dataset.rf, val = chip.dataset.val;
+    if (rf === "bot") realizedBotFilter = val; else if (rf === "platform") realizedPlatformFilter = val;
+    chip.closest(".rf-row").querySelectorAll(".rf-chip").forEach(c => c.classList.remove("active"));
+    chip.classList.add("active");
+    applyRealizedFilter();
   });
 });
 
