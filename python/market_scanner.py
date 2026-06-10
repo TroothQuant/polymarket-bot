@@ -72,12 +72,23 @@ class MarketScanner:
         """Fetch all active events with pagination."""
         all_events = []
         offset = 0
-        limit = 100
+        limit = 50  # ~halves the ~2MB/page payload that triggers gamma JSON truncation
+        consecutive_fail = 0
 
         while True:
             page = self._fetch_events_page(offset, limit)
+            if page is None:
+                # Fetch failed after retries. Skip THIS page only — do not treat a
+                # transient failure as end-of-data (that silently truncated the scan).
+                consecutive_fail += 1
+                if consecutive_fail >= 3:
+                    log.error("Gamma /events: 3 consecutive page failures — stopping pagination early")
+                    break
+                offset += limit
+                continue
+            consecutive_fail = 0
             if not page:
-                break
+                break  # genuine empty page = real end of data
             all_events.extend(page)
             if len(page) < limit:
                 break
@@ -112,9 +123,9 @@ class MarketScanner:
                     time.sleep(wait)
                 else:
                     log.error(f"Failed to fetch events after 3 attempts: {e}")
-                    return []
+                    return None  # signal FAILURE (distinct from a genuine empty page)
 
-        return []
+        return None
 
     def _parse_market(self, mkt: dict, event_title: str, description: str,
                       category: str) -> Optional[MarketInfo]:
