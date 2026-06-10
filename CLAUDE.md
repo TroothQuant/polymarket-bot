@@ -204,6 +204,12 @@ The Claude bot is now on a **numbers-driven probation** (weather is primary; Cla
 
 Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-09.md`.
 
+## Operational notes (added 2026-06-10)
+
+- **Gamma-scanner truncation fixed (`2e8c15e`).** `market_scanner._fetch_all_events` used to do `if not page: break` — which treated a transient gamma JSON-truncation (the ~2MB/page payload coming back malformed: "Unterminated string at col 2.2M") the same as a genuine empty end-of-data page, silently aborting pagination mid-scan. Result: ~5% of cycles ingested only ~1,300 of ~9,070 events (~177 of ~685 eligible). Fix: `_fetch_events_page` returns `None` on total failure (vs `[]` for genuine empty); `_fetch_all_events` skips a failed page (`offset += limit; continue`) with a 3-consecutive-failure guard against an infinite loop on a full outage; page size `limit` 100→50 (halves the payload that triggers truncation). **Pure ingestion fix — no entry/sizing/exit change; does NOT disturb the probation baseline.** Low real impact anyway (gamma returns highest-volume markets first and the bot only evaluates top-20 by volume, so truncated cycles kept the tradeable set), but the silent defect is now closed. Backup `market_scanner.py.bak_gammatrunc_20260610`.
+
+Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-10.md`.
+
 ## Running
 
 ### Config file (primary)
