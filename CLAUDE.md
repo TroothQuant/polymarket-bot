@@ -24,28 +24,33 @@ These two rules govern every session. They override conflicting guidance below.
 - Default to **acting and then reporting**. Do not ask for approval on routine operational decisions.
 - Use best judgment informed by: the bot's documented edge strategy, the current portfolio state, today's research and briefing, and what is most likely to keep both bots **healthy and profitable**.
 
-### Decisions to make WITHOUT asking
-- Closing redundant or highly correlated positions to free capital
-- Tuning per-cycle thresholds (Kelly fraction, position caps, category caps, stop-loss percentage, min edge)
-- Applying code patches that don't change trading semantics (bug fixes, dedup logic, dashboard fixes, scheduler improvements)
-- Restarting bots after a patch
-- Choosing which of two similar positions to keep
-- Picking which file location to write outputs to
-- Deleting duplicate database rows (always with a backup written first)
-- Picking the right format / chart settings / log verbosity
+### Authority — Claude decides (updated 2026-06-15, supersedes the lists below)
 
-### Decisions that REQUIRE asking first
-- Moving from paper trading to live trading (real money)
-- Sending money or initiating any transfer
-- Sending email on Jonathon's behalf to third parties
-- Changing the bot's core strategy archetype (e.g. switching from edge-based to momentum-based)
-- Killing an entire trading category permanently
-- Irreversible deletion of source code, git history, or backups
-- Any action with legal or financial implications beyond paper-trading tuning
+Jonathon has delegated **full decision-making authority** to Claude. Claude makes ALL operational, strategic, risk, tuning, code, deployment-staging, and prioritization decisions for the bots. Claude does **not** park decisions, ask Jonathon to choose between options, or present "optional next steps" for sign-off. Claude determines what is best for the bots' health and profitability, **acts, and reports in past tense.** Recommendations are not floated for approval — they are decided and executed. (Server commands still go to Jonathon as paste-ready Claude Code prompts to *execute*, but the decision behind them is Claude's, already made.)
+
+### Decisions Claude makes autonomously (non-exhaustive)
+- Changing strategy/archetype, arming/disarming filters and kill-switches, enabling/disabling a trading category, position sizing and risk caps, retiring or reviving a bot.
+- Tuning per-cycle thresholds (Kelly fraction, position/category caps, stop-loss, min edge, conviction floor).
+- Code patches and refactors, dashboard/scheduler changes, restarts and deploys, committing + relay-pushing code — backups + tests first.
+- Closing/keeping positions, deleting duplicate rows (backup first), DB/schema maintenance, file locations, formats, log verbosity, and choosing what to work on next.
+
+### Reserved for Jonathon (the ONLY exception)
+- **The physical act of going live with real money.** Claude decides WHEN the bot is ready and tells Jonathon "we look good to go live." Jonathon then performs that one go-live action. Claude never flips the bot to real-money trading, sends money, initiates a transfer, or emails third parties on Jonathon's behalf without Jonathon performing that specific physical action.
+
+### Guardrails Claude still respects (not "asks," just doesn't do recklessly)
+- No irreversible destruction of source code, git history, or backups without a written backup first.
+- Real money, transfers, and third-party email remain Jonathon's physical action, on Claude's recommendation.
 
 ### How to track progress
 - Report what was done, not what is planned. Past tense.
 - If intent or scope is ambiguous (rare), one targeted clarifying question at the start of the session is fine. Once scope is clear, execute without re-asking.
+
+## 3. Division of labor — Code writes, Cowork does not
+
+- **Cowork (Claude Desktop) does NOT modify files** — no code, no scripts, no config, and no edits to the canonical record (session logs, NAVIGATION.md, CLAUDE.md). Cowork's job is to plan, research, decide, review, and draft exact content or paste-ready Claude Code prompts.
+- **Claude Code is the single writer.** Code makes ALL code/script/config changes AND all writes to the canonical docs, then reports back. If Cowork has produced text for a doc, it hands that text to Code to write.
+- **Rationale:** one writer prevents the duplicate-edit / drift failure mode the project has repeatedly hit, and keeps server-deployed code and its git history under a single hand. Cowork's leverage is judgment and drafting, not file edits.
+- **Only exception:** if Jonathon explicitly asks Cowork in-session to write or edit a specific file, that one-off overrides this. Default is hands-off.
 
 ---
 
@@ -209,6 +214,17 @@ Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-0
 - **Gamma-scanner truncation fixed (`2e8c15e`).** `market_scanner._fetch_all_events` used to do `if not page: break` — which treated a transient gamma JSON-truncation (the ~2MB/page payload coming back malformed: "Unterminated string at col 2.2M") the same as a genuine empty end-of-data page, silently aborting pagination mid-scan. Result: ~5% of cycles ingested only ~1,300 of ~9,070 events (~177 of ~685 eligible). Fix: `_fetch_events_page` returns `None` on total failure (vs `[]` for genuine empty); `_fetch_all_events` skips a failed page (`offset += limit; continue`) with a 3-consecutive-failure guard against an infinite loop on a full outage; page size `limit` 100→50 (halves the payload that triggers truncation). **Pure ingestion fix — no entry/sizing/exit change; does NOT disturb the probation baseline.** Low real impact anyway (gamma returns highest-volume markets first and the bot only evaluates top-20 by volume, so truncated cycles kept the tradeable set), but the silent defect is now closed. Backup `market_scanner.py.bak_gammatrunc_20260610`.
 
 Full writeup: `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/session_log_2026-06-10.md`.
+
+## Operational notes (added 2026-06-12) — BOT DECOMMISSIONED (reversible)
+
+**The Claude bot was retired early on 2026-06-12.** `trooth-claude-bot.service` is **stopped + disabled** on `trooth-server` (won't restart on boot / unattended-upgrades / needrestart). This pre-empts the 7/7 probation review — the conclusion was not going to change.
+
+- **Why:** no edge source. The bot is a general AI-ensemble probability guesser against an efficient market; lifetime loss is ~100% stop-losses on the "short the priced-too-high longshot" pattern (realized −$248 by 6/12). It also costs real Anthropic dollars every cycle to produce paper losses. Sports told the same no-edge story (51%). Decision rationale + the "don't replace it with another speculative general trader" call are in `session_log_2026-06-12.md`.
+- **Reverse:** `ssh trooth-server "sudo systemctl enable --now trooth-claude-bot"` — resumes from `data/portfolio.json`; `is_halted` auto-clears if healthy.
+- **Code/data PRESERVED.** Nothing deleted. This repo's `python/trader.py` `LiveTrader` is the **port source for the weather bot's live-execution layer** (the `weather-live-v1` G2 build came from it) — that's the main reason the code stays.
+- **`trooth-claude-dashboard.service` left active** (read-only; shows the bot's frozen final state, and is the page now hosting the new weather-ops readiness panel).
+- **`trooth-claude-probation.timer`** is now moot — disable next session or leave inert.
+- Open paper positions at stop time (Paper Rex NO, UFC Gane NO [resolves 6/15], US×Iran peace NO) are abandoned in place — **paper, no real exposure.**
 
 ## Running
 
