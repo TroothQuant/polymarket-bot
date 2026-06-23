@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from collections import deque
@@ -526,6 +527,61 @@ def weather_readiness(since: str = G0_SINCE) -> JSONResponse:
         "gate": gate,
         "since": since,
     })
+
+
+# -------------------- /api/weather/positions-enriched ---------------
+# Open weather positions from the bot, each enriched with its human-readable
+# temperature bucket (gamma `groupItemTitle`), so two same-city same-side fades
+# on different buckets render as distinct rows. Read-only against the weather
+# bot; caches id->bucket (a market's bucket never changes); degrades gracefully
+# — a failed gamma lookup just leaves the row with no bucket, never 500s.
+# MUST be declared before the /api/weather/{path} catch-all below or it'd be shadowed.
+_bucket_cache: Dict[str, str] = {}
+
+
+def _gamma_bucket_label(market_id: str) -> str:
+    if not market_id:
+        return ""
+    if market_id in _bucket_cache:
+        return _bucket_cache[market_id]
+    label = ""
+    try:
+        resp = httpx.get(
+            f"https://gamma-api.polymarket.com/markets/{market_id}",
+            headers={"User-Agent": CLOB_USER_AGENT},
+            timeout=4.0,
+        )
+        if resp.status_code == 200:
+            m = resp.json()
+            if isinstance(m, list):
+                m = m[0] if m else {}
+            label = (m.get("groupItemTitle") or "").strip()
+            if not label:
+                mm = re.search(r"\bbe\s+(.+?)\s+on\b", m.get("question") or "")
+                if mm:
+                    label = mm.group(1).strip()
+    except httpx.HTTPError as e:
+        print(f"[bucket] gamma lookup failed for {market_id}: {e} — rendering without bucket")
+    _bucket_cache[market_id] = label
+    return label
+
+
+@app.get("/api/weather/positions-enriched")
+def weather_positions_enriched() -> JSONResponse:
+    """The weather bot's open positions, each with an added `bucket_label`."""
+    try:
+        resp = httpx.get(f"{WEATHER_BASE_URL}/api/positions-detail", timeout=6.0)
+        positions = resp.json() if resp.status_code == 200 else []
+    except httpx.HTTPError:
+        positions = []
+    if isinstance(positions, dict):
+        positions = positions.get("positions", [])
+    if not isinstance(positions, list):
+        positions = []
+    for p in positions:
+        if isinstance(p, dict):
+            p["bucket_label"] = _gamma_bucket_label(str(p.get("market_ticker") or ""))
+    return JSONResponse(positions)
 
 
 # -------------------- /api/weather/{path}          --------------------

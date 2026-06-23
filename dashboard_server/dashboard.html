@@ -667,7 +667,7 @@ function renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositi
 
       return `
         <div class="${cardClass}">
-          <div class="pos-question"><span class="trade-num">#${t.id ?? "—"}</span><span class="side-badge ${sideLabel}">${sideLabel}</span>${escapeHtml(t.event_slug || "?")}${platformBadge}${stateBadge}</div>
+          <div class="pos-question"><span class="trade-num">#${t.id ?? "—"}</span><span class="side-badge ${sideLabel}">${sideLabel}</span>${escapeHtml(t.event_slug || "?")}${t.bucket_label ? `<span style="font-family:var(--mono); font-size:11px; color:#58a6ff; background:rgba(88,166,255,0.12); border:1px solid rgba(88,166,255,0.35); border-radius:4px; padding:1px 6px; margin:0 4px;">${escapeHtml(t.bucket_label)}</span>` : ""}${platformBadge}${stateBadge}</div>
           <div class="row">
             <div><div class="lbl">Entry → Now</div><div class="v">${entryToNow}</div></div>
             <div><div class="lbl">Size</div><div class="v">${fmtUsd(sizeUsd, 0)}</div></div>
@@ -1112,7 +1112,7 @@ async function refresh() {
     fetchJSON("/api/weather/stats"),
     fetchJSON("/api/weather/trades?limit=50"),
     fetchJSON("/api/weather/events?limit=40"),
-    fetchJSON("/api/weather/positions-detail"),
+    fetchJSON("/api/weather/positions-enriched"),
     fetchJSON("/api/weather/readiness"),
   ]);
 
