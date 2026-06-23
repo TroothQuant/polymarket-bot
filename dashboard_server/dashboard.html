@@ -340,11 +340,6 @@
   </div>
   <div class="chart-canvas-wrap">
     <canvas id="pnl-chart"></canvas>
-    <div id="hud-readout" style="position:absolute; top:10px; left:14px; pointer-events:none;">
-      <div style="color:#8b949e; font-size:11px; letter-spacing:0.04em;">PORTFOLIO VALUE</div>
-      <div id="hud-value" style="color:#e6edf3; font-size:26px; font-weight:500; line-height:1.1;">—</div>
-      <div id="hud-delta" style="display:inline-block; margin-top:3px; font-size:11px; padding:1px 7px; border-radius:6px;"></div>
-    </div>
     <span style="position:absolute; top:6px; left:6px; width:10px; height:10px; border-left:1.5px solid #58a6ff; border-top:1.5px solid #58a6ff; pointer-events:none;"></span>
     <span style="position:absolute; top:6px; right:6px; width:10px; height:10px; border-right:1.5px solid #58a6ff; border-top:1.5px solid #58a6ff; pointer-events:none;"></span>
     <span style="position:absolute; bottom:6px; left:6px; width:10px; height:10px; border-left:1.5px solid #58a6ff; border-bottom:1.5px solid #58a6ff; pointer-events:none;"></span>
@@ -953,6 +948,17 @@ function renderReadiness(data) {
   });
 }
 
+// Downsample dense step-points to ~target buckets for a smooth DISPLAY curve.
+// Display-only — the HUD value/delta math always uses the full weatherPoints.
+function downsample(points, target){
+  if(points.length<=target) return points;
+  const first=points[0].x, last=points[points.length-1].x, span=(last-first)||1, bucket=span/target;
+  const out=[]; let bi=-1, cur=null;
+  for(const p of points){ const idx=Math.floor((p.x-first)/bucket); if(idx!==bi && cur){ out.push(cur); bi=idx; } cur=p; }
+  if(cur && (out.length===0 || out[out.length-1]!==cur)) out.push(cur);
+  return out;
+}
+
 async function renderChart() {
   const ws = await fetchJSON(`/api/weather/snapshots?since=${currentRange}`);
 
@@ -963,6 +969,9 @@ async function renderChart() {
     x: r.ts * 1000,
     y: (r.bankroll || 0) + (r.exposure || 0),
   }));
+
+  // Smoothed series for plotting only (true latest/first stay in weatherPoints).
+  const weatherPlot = downsample(weatherPoints, 90);
 
   // For "all" mode, decide label format from actual data span (computed once
   // here, not per-tick). < 24h of data → times; 1-60d → M/D; ≥ 60d → "May 2026".
@@ -994,7 +1003,8 @@ async function renderChart() {
       datasets: [
         {
           label: "Weather Bot",
-          data: weatherPoints,
+          data: weatherPlot,
+          cubicInterpolationMode: "monotone",
           borderColor: "#58a6ff",
           backgroundColor: (c) => {
             const a = c.chart.chartArea;
@@ -1016,8 +1026,9 @@ async function renderChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { top: 8 } },
       plugins: {
-        legend: { labels: { color: "#e6edf3", font: { size: 11 } } },
+        legend: { display: false },
         tooltip: {
           mode: "nearest", intersect: false,
           callbacks: {
@@ -1076,30 +1087,6 @@ async function renderChart() {
       interaction: { mode: "index", intersect: false },
     },
   });
-
-  // ── HUD readout (current value + delta pill), recomputed every rebuild ──
-  const hudVal = document.getElementById("hud-value");
-  const hudDelta = document.getElementById("hud-delta");
-  if (hudVal && hudDelta) {
-    if (weatherPoints.length === 0) {
-      hudVal.textContent = "—";
-      hudDelta.textContent = "";
-      hudDelta.style.background = "transparent";
-    } else {
-      const last = weatherPoints[weatherPoints.length - 1].y;
-      const winMin = currentRange === "24h" ? Date.now() - 86400000
-                   : currentRange === "7d"  ? Date.now() - 7 * 86400000
-                   : -Infinity;
-      const inWin = weatherPoints.filter(p => p.x >= winMin);
-      const firstY = (inWin.length ? inWin[0] : weatherPoints[0]).y;
-      const delta = last - firstY;
-      const up = delta >= 0;
-      hudVal.textContent = "$" + last.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-      hudDelta.textContent = (up ? "▲ +$" : "▼ −$") + Math.abs(delta).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-      hudDelta.style.color = "#fff";
-      hudDelta.style.background = up ? "#3fb950" : "#f85149";
-    }
-  }
 }
 
 // ── escaping ───────────────────────────────────────────────────────────
