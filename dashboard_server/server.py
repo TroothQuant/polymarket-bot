@@ -568,20 +568,32 @@ def _gamma_bucket_label(market_id: str) -> str:
 
 @app.get("/api/weather/positions-enriched")
 def weather_positions_enriched() -> JSONResponse:
-    """The weather bot's open positions, each with an added `bucket_label`."""
+    """The weather bot's positions-detail response returned UNCHANGED in shape
+    (the {positions:[...], cache_ttl_s:...} envelope), with a `bucket_label` added
+    to each position. Preserving the envelope is required — the dashboard reads
+    `resp.positions`, so returning a bare list would null it out and trigger the
+    no-mark trades fallback. Pass-through on errors mirrors the weather proxy so
+    fetchJSON falls back exactly as before."""
     try:
         resp = httpx.get(f"{WEATHER_BASE_URL}/api/positions-detail", timeout=6.0)
-        positions = resp.json() if resp.status_code == 200 else []
-    except httpx.HTTPError:
-        positions = []
-    if isinstance(positions, dict):
-        positions = positions.get("positions", [])
-    if not isinstance(positions, list):
-        positions = []
-    for p in positions:
-        if isinstance(p, dict):
-            p["bucket_label"] = _gamma_bucket_label(str(p.get("market_ticker") or ""))
-    return JSONResponse(positions)
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            {"error": "weather bot unreachable", "detail": str(e), "status": 503},
+            status_code=503,
+        )
+    if resp.status_code != 200:
+        return JSONResponse({"error": "upstream", "status": resp.status_code}, status_code=resp.status_code)
+    try:
+        payload = resp.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "non-json upstream", "status": 502}, status_code=502)
+    # Add bucket_label to each position IN PLACE; return the original payload shape.
+    positions = payload.get("positions") if isinstance(payload, dict) else payload
+    if isinstance(positions, list):
+        for p in positions:
+            if isinstance(p, dict):
+                p["bucket_label"] = _gamma_bucket_label(str(p.get("market_ticker") or ""))
+    return JSONResponse(payload)
 
 
 # -------------------- /api/weather/{path}          --------------------
