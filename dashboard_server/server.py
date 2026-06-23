@@ -38,6 +38,18 @@ LOG_PATH = DATA_DIR / "bot.log"
 SNAPSHOTS_DB_PATH = DATA_DIR / "snapshots.db"
 DASHBOARD_HTML = HERE / "dashboard.html"
 
+# Weather bot's live DB — read-only source for the G0 live-readiness panel.
+# Lives next to this repo under ../../trooth-weather-bot/. Override via env.
+WEATHER_DB_PATH = Path(
+    os.environ.get(
+        "WEATHER_DB_PATH",
+        str(REPO_ROOT.parent / "trooth-weather-bot" / "tradingbot.db"),
+    )
+)
+# G0 gate parameters (mirror the morning-sweep query).
+G0_SINCE = "2026-05-28"
+G0_SAMPLE_TARGET = 20
+
 
 def _since_to_secs(since: str) -> int:
     """Parse '24h' / '7d' / 'all' into a lookback-seconds value."""
@@ -414,6 +426,106 @@ def claude_positions_detail() -> JSONResponse:
             "stuck_seconds": stuck_seconds,
         })
     return JSONResponse({"positions": enriched, "last_updated": data.get("last_updated")})
+
+
+# -------------------- /api/weather/readiness       --------------------
+# Live G0 live-readiness feed for the dashboard's weather-ops panel.
+# Read-only against the weather bot's tradingbot.db (opened mode=ro; WAL-safe
+# for concurrent readers — this never writes). Per-city settled Polymarket
+# weather scorecard + the G0 gate (sample / profit / breadth). City is parsed
+# from event_slug exactly as the morning G0 query does: the slice between
+# 'temperature-in-' and '-on-'. MUST be declared before the /{path:path} proxy
+# below so it isn't swallowed by the catch-all.
+
+_READINESS_SQL = """
+    SELECT
+      substr(event_slug,
+             instr(event_slug,'temperature-in-')+15,
+             instr(event_slug,'-on-')-instr(event_slug,'temperature-in-')-15) AS city,
+      COUNT(*) AS n,
+      SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) AS wins,
+      ROUND(SUM(pnl),2) AS pnl
+    FROM trades
+    WHERE market_type='weather' AND platform='polymarket'
+      AND result IN ('win','loss')
+      AND date(settlement_time) >= ?
+    GROUP BY city
+    ORDER BY pnl DESC
+"""
+
+
+@app.get("/api/weather/readiness")
+def weather_readiness(since: str = G0_SINCE) -> JSONResponse:
+    empty = {
+        "cities": [],
+        "total": {"n": 0, "wins": 0, "hit": 0.0, "pnl": 0.0},
+        "gate": {},
+        "since": since,
+    }
+    if not WEATHER_DB_PATH.exists():
+        return JSONResponse({**empty, "_source": "missing"})
+    try:
+        # Plain connect (matches the snapshots endpoint) so a live WAL database
+        # opens cleanly, then PRAGMA query_only=ON makes the connection reject any
+        # write at the engine level — read-only guarantee without the mode=ro WAL
+        # pitfall. busy_timeout avoids contending with the weather bot's writes.
+        conn = sqlite3.connect(str(WEATHER_DB_PATH), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        rows = [dict(r) for r in conn.execute(_READINESS_SQL, (since,))]
+        conn.close()
+    except sqlite3.Error as e:
+        # Never 500 the dashboard — return empty with an error note.
+        return JSONResponse({**empty, "error": str(e)})
+
+    cities = []
+    for r in rows:
+        n = r["n"] or 0
+        wins = r["wins"] or 0
+        pnl = round(r["pnl"] or 0.0, 2)
+        cities.append({
+            "city": r["city"],
+            "n": n,
+            "wins": wins,
+            "hit": round(100.0 * wins / n, 1) if n else 0.0,
+            "pnl": pnl,
+        })
+
+    total_n = sum(c["n"] for c in cities)
+    total_wins = sum(c["wins"] for c in cities)
+    total_pnl = round(sum(c["pnl"] for c in cities), 2)
+    top_pnl = max((c["pnl"] for c in cities), default=0.0)
+    top_city = cities[0]["city"] if cities else None  # already ordered by pnl desc
+    ex_top_pnl = round(total_pnl - top_pnl, 2)
+
+    sample_pass = total_n >= G0_SAMPLE_TARGET
+    profit_pass = total_pnl > 0
+    # Breadth: the book must still be profitable with its single best city removed.
+    breadth_pass = ex_top_pnl > 0
+
+    gate = {
+        "sample": {
+            "pass": sample_pass, "n": total_n, "target": G0_SAMPLE_TARGET,
+            "pct": round(min(100.0, 100.0 * total_n / G0_SAMPLE_TARGET), 1) if G0_SAMPLE_TARGET else 0.0,
+        },
+        "profit": {"pass": profit_pass, "pnl": total_pnl},
+        "breadth": {
+            "pass": breadth_pass, "ex_top_pnl": ex_top_pnl,
+            "top_city": top_city, "top_pnl": top_pnl,
+        },
+        "ready": bool(sample_pass and profit_pass and breadth_pass),
+    }
+    return JSONResponse({
+        "cities": cities,
+        "total": {
+            "n": total_n, "wins": total_wins,
+            "hit": round(100.0 * total_wins / total_n, 1) if total_n else 0.0,
+            "pnl": total_pnl,
+        },
+        "gate": gate,
+        "since": since,
+    })
 
 
 # -------------------- /api/weather/{path}          --------------------

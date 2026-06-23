@@ -141,6 +141,47 @@
   .bot-header .bot-color.weather { background: var(--weather); }
   .bot-header .bot-color.claude { background: var(--claude); }
 
+  /* Weather-ops readiness panel (HUD) */
+  .wo-panel { position: relative; }
+  .wo-head { position: relative; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    background: var(--bg-elev-2); display: flex; align-items: center; gap: 10px; }
+  .wo-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
+  .wo-tag { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); }
+  .wo-status { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--accent);
+    border: 1px solid rgba(88,166,255,0.4); border-radius: 100px; padding: 2px 10px;
+    box-shadow: inset 0 0 8px rgba(88,166,255,0.25); }
+  .wo-sweep { position: absolute; top: 0; bottom: 0; left: -25%; width: 22%; pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(88,166,255,0.18), transparent);
+    animation: wo-scan 3.6s linear infinite; }
+  .wo-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--green);
+    box-shadow: 0 0 8px var(--green); flex: none; }
+  .wo-live { animation: wo-pulse 1.7s ease-in-out infinite; }
+  @keyframes wo-scan { 0% { left: -25%; } 100% { left: 110%; } }
+  @keyframes wo-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .wo-gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 14px 16px;
+    background: var(--bg-elev-2); border-bottom: 1px solid var(--border); }
+  .wo-gauge { text-align: center; }
+  .wo-gauge svg { display: block; margin: 0 auto; }
+  .wo-gauge .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--fg-mute); margin-top: 2px; }
+  .wo-gauge .sub { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+  .wo-ring-bg { stroke: var(--border); }
+  .wo-ring-fg { transition: stroke-dashoffset 1.3s cubic-bezier(.22,.61,.36,1); }
+  .wo-cities { padding: 10px 12px 4px; }
+  .wo-city { display: grid; grid-template-columns: 12px 1fr 32px 60px 76px; align-items: center; gap: 9px;
+    padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; background: var(--bg-elev); }
+  .wo-city.load { border-color: rgba(63,185,80,0.5); box-shadow: 0 0 10px rgba(63,185,80,0.12); }
+  .wo-city .cd { width: 8px; height: 8px; border-radius: 50%; }
+  .wo-city .cname { font-size: 13px; color: var(--fg); }
+  .wo-city .cload { font-family: var(--mono); font-size: 9px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.5px; }
+  .wo-city .cn { font-family: var(--mono); font-size: 12px; color: var(--fg-mute); }
+  .wo-bar { height: 6px; background: var(--border); border-radius: 100px; overflow: hidden; }
+  .wo-bar > span { display: block; height: 100%; width: 0; border-radius: 100px; transition: width 1.1s ease; }
+  .wo-city .cpnl { font-family: var(--mono); font-size: 13px; text-align: right; font-weight: 600; }
+  .wo-verdict { margin: 8px 12px 14px; padding: 10px 12px; border-radius: 6px; border-left: 3px solid var(--yellow);
+    background: rgba(210,153,34,0.12); font-size: 12px; color: var(--fg); }
+  .wo-verdict.go { border-left-color: var(--green); background: var(--green-dim); }
+  .wo-verdict .vtag { font-family: var(--mono); font-weight: 600; }
+
   .bot-summary {
     padding: 10px 16px;
     background: var(--bg-elev-2);
@@ -297,7 +338,18 @@
       <button data-range="all">All</button>
     </div>
   </div>
-  <div class="chart-canvas-wrap"><canvas id="pnl-chart"></canvas></div>
+  <div class="chart-canvas-wrap">
+    <canvas id="pnl-chart"></canvas>
+    <div id="hud-readout" style="position:absolute; top:10px; left:14px; pointer-events:none;">
+      <div style="color:#8b949e; font-size:11px; letter-spacing:0.04em;">PORTFOLIO VALUE</div>
+      <div id="hud-value" style="color:#e6edf3; font-size:26px; font-weight:500; line-height:1.1;">—</div>
+      <div id="hud-delta" style="display:inline-block; margin-top:3px; font-size:11px; padding:1px 7px; border-radius:6px;"></div>
+    </div>
+    <span style="position:absolute; top:6px; left:6px; width:10px; height:10px; border-left:1.5px solid #58a6ff; border-top:1.5px solid #58a6ff; pointer-events:none;"></span>
+    <span style="position:absolute; top:6px; right:6px; width:10px; height:10px; border-right:1.5px solid #58a6ff; border-top:1.5px solid #58a6ff; pointer-events:none;"></span>
+    <span style="position:absolute; bottom:6px; left:6px; width:10px; height:10px; border-left:1.5px solid #58a6ff; border-bottom:1.5px solid #58a6ff; pointer-events:none;"></span>
+    <span style="position:absolute; bottom:6px; right:6px; width:10px; height:10px; border-right:1.5px solid #58a6ff; border-bottom:1.5px solid #58a6ff; pointer-events:none;"></span>
+  </div>
 </section>
 
 <main>
@@ -322,25 +374,19 @@
     </details>
   </div>
 
-  <!-- Claude Bot Column -->
-  <div class="bot-column">
-    <div class="bot-header">
-      <span class="bot-color claude"></span>
-      <h2>Claude Ensemble Bot</h2>
-      <span class="status-dot" id="claude-status-dot"></span>
-      <span class="status-text" id="claude-status-text">—</span>
+  <!-- Weather Ops — Live Readiness (replaces the retired Claude column) -->
+  <div class="bot-column wo-panel">
+    <div class="wo-head">
+      <span class="wo-sweep" aria-hidden="true"></span>
+      <span class="wo-dot wo-live" aria-hidden="true"></span>
+      <h2>weather ops</h2>
+      <span class="wo-tag">// live-readiness</span>
+      <span class="wo-status" id="wo-status">paper · monitoring</span>
     </div>
-    <div class="bot-summary" id="claude-summary">—</div>
-    <div class="section-title">Open Positions <span class="count" id="claude-pos-count"></span></div>
-    <div class="positions-list" id="claude-positions"><div class="empty">loading…</div></div>
-    <details class="collapsible">
-      <summary>Recent Trades</summary>
-      <div class="body" id="claude-trades"><div class="empty">loading…</div></div>
-    </details>
-    <details class="collapsible">
-      <summary>Recent Log</summary>
-      <div class="body" id="claude-log"><div class="empty">loading…</div></div>
-    </details>
+    <div class="wo-gauges" id="wo-gauges"><div class="empty">loading…</div></div>
+    <div class="section-title">City scorecard <span class="count" id="wo-since">G0 · since 5/28</span></div>
+    <div class="wo-cities" id="wo-cities"><div class="empty">loading…</div></div>
+    <div class="wo-verdict" id="wo-verdict"></div>
   </div>
 </main>
 
@@ -814,21 +860,105 @@ function renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog,
 }
 
 // ── Chart ──────────────────────────────────────────────────────────────
-async function renderChart() {
-  const [cs, ws] = await Promise.all([
-    fetchJSON(`/api/claude/snapshots?since=${currentRange}`),
-    fetchJSON(`/api/weather/snapshots?since=${currentRange}`)
-  ]);
+// ── Weather-ops readiness panel ─────────────────────────────────────────
+function woMoney(v) {
+  const n = Math.round(Number(v) || 0);
+  return (n < 0 ? "-$" : "+$") + Math.abs(n).toLocaleString();
+}
+const WO_CITY_LABELS = {
+  "nyc": "new york", "los-angeles": "los angeles",
+  "chicago": "chicago", "miami": "miami", "denver": "denver",
+};
+function woRing(pct, color, centerSvg, subText, label) {
+  const C = 188.5;
+  const off = (C * (1 - Math.max(0, Math.min(100, pct)) / 100)).toFixed(1);
+  return `<div class="wo-gauge">
+    <svg viewBox="0 0 72 72" width="74" height="74">
+      <circle class="wo-ring-bg" cx="36" cy="36" r="30" fill="none" stroke-width="6"/>
+      <circle class="wo-ring-fg" cx="36" cy="36" r="30" fill="none" stroke="${color}" stroke-width="6"
+        stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C}"
+        transform="rotate(-90 36 36)" style="filter: drop-shadow(0 0 4px ${color});" data-off="${off}"/>
+      ${centerSvg}
+    </svg>
+    <div class="lbl">${label}</div>
+    <div class="sub">${subText}</div>
+  </div>`;
+}
+function renderReadiness(data) {
+  const gaugesEl = document.getElementById("wo-gauges");
+  const citiesEl = document.getElementById("wo-cities");
+  const verdictEl = document.getElementById("wo-verdict");
+  if (!gaugesEl) return;
+  if (!data || data.error || data._source === "missing" || !data.gate) {
+    gaugesEl.innerHTML = '<div class="empty">weather DB unreachable</div>';
+    citiesEl.innerHTML = "";
+    verdictEl.innerHTML = "";
+    return;
+  }
+  const green = "var(--green)", red = "var(--red)", yellow = "var(--yellow)";
+  const g = data.gate, s = g.sample || {}, p = g.profit || {}, b = g.breadth || {};
+  const t = data.total || {};
 
-  const claudeRows = (cs?.snapshots) || [];
+  const sCol = s.pass ? green : yellow;
+  const sCenter = `<text x="36" y="34" text-anchor="middle" style="fill:var(--fg);font-family:var(--mono);font-size:16px;">${s.n ?? 0}</text>`
+    + `<text x="36" y="48" text-anchor="middle" style="fill:var(--fg-faint);font-family:var(--mono);font-size:10px;">/ ${s.target ?? 20}</text>`;
+  const pCol = p.pass ? green : red;
+  const pCenter = `<text x="36" y="40" text-anchor="middle" style="fill:${pCol};font-family:var(--mono);font-size:13px;font-weight:600;">${p.pass ? "PASS" : "FAIL"}</text>`;
+  const bCol = b.pass ? green : red;
+  const bCenter = `<text x="36" y="40" text-anchor="middle" style="fill:${bCol};font-family:var(--mono);font-size:13px;font-weight:600;">${b.pass ? "PASS" : "FAIL"}</text>`;
+
+  gaugesEl.innerHTML =
+    woRing(s.pct ?? 0, sCol, sCenter, `${s.n ?? 0}/${s.target ?? 20}`, "sample") +
+    woRing(100, pCol, pCenter, woMoney(p.pnl), "profit") +
+    woRing(100, bCol, bCenter, "ex-top " + woMoney(b.ex_top_pnl), "breadth");
+
+  const top = b.top_city;
+  const rows = (data.cities || []).map((c) => {
+    const pos = c.pnl >= 0;
+    const col = pos ? green : red;
+    const load = c.city === top;
+    const name = WO_CITY_LABELS[c.city] || String(c.city).replace(/-/g, " ");
+    return `<div class="wo-city${load ? " load" : ""}">
+      <span class="cd" style="background:${col};box-shadow:0 0 6px ${col};"></span>
+      <span><span class="cname">${escapeHtml(name)}</span>${load ? ' <span class="cload">load-bearing</span>' : ""}</span>
+      <span class="cn">n${c.n}</span>
+      <span class="wo-bar"><span data-w="${Math.max(0, Math.min(100, c.hit))}" style="background:${col};"></span></span>
+      <span class="cpnl" style="color:${col};">${woMoney(c.pnl)}</span>
+    </div>`;
+  }).join("");
+  citiesEl.innerHTML = rows || '<div class="empty">no settled trades yet</div>';
+
+  if (g.ready) {
+    verdictEl.className = "wo-verdict go";
+    verdictEl.innerHTML = `<span class="vtag" style="color:var(--green);">G0 // GO-READY</span> — n ${t.n}, ${woMoney(t.pnl)}, broad across cities.`;
+  } else {
+    verdictEl.className = "wo-verdict";
+    const reasons = [];
+    if (!s.pass) reasons.push(`n ${s.n}/${s.target}`);
+    if (!p.pass) reasons.push("not profitable");
+    if (!b.pass) {
+      const tn = WO_CITY_LABELS[top] || top || "top city";
+      reasons.push(`breadth fail: ${tn} carries the book (strip it → ${woMoney(b.ex_top_pnl)})`);
+    }
+    verdictEl.innerHTML = `<span class="vtag" style="color:var(--yellow);">G0 // HOLD</span> — ${reasons.join("; ")}.`;
+  }
+
+  requestAnimationFrame(() => {
+    document.querySelectorAll("#wo-gauges .wo-ring-fg").forEach((c) => {
+      c.style.strokeDashoffset = c.getAttribute("data-off");
+    });
+    document.querySelectorAll("#wo-cities .wo-bar > span").forEach((bar) => {
+      bar.style.width = (bar.getAttribute("data-w") || 0) + "%";
+    });
+  });
+}
+
+async function renderChart() {
+  const ws = await fetchJSON(`/api/weather/snapshots?since=${currentRange}`);
+
   const weatherRows = (ws?.snapshots) || [];
 
-  // Build combined timeline: each point = (ts, claude_value, weather_value)
-  // Use last-known-value carry-forward when one series doesn't have a sample at the other's ts.
-  const claudePoints = claudeRows.map(r => ({
-    x: r.ts * 1000,
-    y: (r.bankroll || 0) + (r.exposure || 0) + (r.unrealized_pnl || 0),
-  }));
+  // Single-series chart: Weather Bot only (Claude bot retired/decommissioned).
   const weatherPoints = weatherRows.map(r => ({
     x: r.ts * 1000,
     y: (r.bankroll || 0) + (r.exposure || 0),
@@ -838,7 +968,7 @@ async function renderChart() {
   // here, not per-tick). < 24h of data → times; 1-60d → M/D; ≥ 60d → "May 2026".
   let allModeFormat = "date";  // M/D
   if (currentRange === "all") {
-    const allX = [...claudePoints, ...weatherPoints].map(p => p.x);
+    const allX = weatherPoints.map(p => p.x);
     if (allX.length === 0) {
       allModeFormat = "date";
     } else {
@@ -851,30 +981,35 @@ async function renderChart() {
 
   if (pnlChart) pnlChart.destroy();
 
+  const glow = {
+    id: "glow",
+    beforeDatasetsDraw(c) { const x = c.ctx; x.save(); x.shadowColor = "rgba(88,166,255,0.9)"; x.shadowBlur = 12; },
+    afterDatasetsDraw(c) { c.ctx.restore(); },
+  };
   const ctx = document.getElementById("pnl-chart").getContext("2d");
   pnlChart = new Chart(ctx, {
     type: "line",
+    plugins: [glow],
     data: {
       datasets: [
-        {
-          label: "Claude Bot",
-          data: claudePoints,
-          borderColor: "#d2a8ff",
-          backgroundColor: "rgba(210,168,255,0.25)",
-          fill: "origin",
-          tension: 0.2,
-          pointRadius: 0,
-          borderWidth: 1.5,
-        },
         {
           label: "Weather Bot",
           data: weatherPoints,
           borderColor: "#58a6ff",
-          backgroundColor: "rgba(88,166,255,0.18)",
-          fill: "origin",
-          tension: 0.2,
-          pointRadius: 0,
-          borderWidth: 1.5,
+          backgroundColor: (c) => {
+            const a = c.chart.chartArea;
+            if (!a) return "rgba(88,166,255,0.15)";
+            const g = c.chart.ctx.createLinearGradient(0, a.top, 0, a.bottom);
+            g.addColorStop(0, "rgba(88,166,255,0.45)");
+            g.addColorStop(1, "rgba(88,166,255,0.02)");
+            return g;
+          },
+          borderWidth: 2.5,
+          tension: 0.35,
+          fill: true,
+          pointRadius: (c) => c.dataIndex === c.dataset.data.length - 1 ? 5 : 0,
+          pointBackgroundColor: "#add4ff",
+          pointBorderColor: "#58a6ff",
         },
       ],
     },
@@ -883,7 +1018,17 @@ async function renderChart() {
       maintainAspectRatio: false,
       plugins: {
         legend: { labels: { color: "#e6edf3", font: { size: 11 } } },
-        tooltip: { mode: "nearest", intersect: false },
+        tooltip: {
+          mode: "nearest", intersect: false,
+          callbacks: {
+            title: (items) => {
+              const d = new Date(items[0].parsed.x);
+              if (currentRange === "24h") return d.toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
+              return d.toLocaleDateString([], {month:"numeric", day:"numeric", year:"numeric"});
+            },
+            label: (item) => "$" + item.parsed.y.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}),
+          },
+        },
       },
       scales: {
         x: {
@@ -931,6 +1076,30 @@ async function renderChart() {
       interaction: { mode: "index", intersect: false },
     },
   });
+
+  // ── HUD readout (current value + delta pill), recomputed every rebuild ──
+  const hudVal = document.getElementById("hud-value");
+  const hudDelta = document.getElementById("hud-delta");
+  if (hudVal && hudDelta) {
+    if (weatherPoints.length === 0) {
+      hudVal.textContent = "—";
+      hudDelta.textContent = "";
+      hudDelta.style.background = "transparent";
+    } else {
+      const last = weatherPoints[weatherPoints.length - 1].y;
+      const winMin = currentRange === "24h" ? Date.now() - 86400000
+                   : currentRange === "7d"  ? Date.now() - 7 * 86400000
+                   : -Infinity;
+      const inWin = weatherPoints.filter(p => p.x >= winMin);
+      const firstY = (inWin.length ? inWin[0] : weatherPoints[0]).y;
+      const delta = last - firstY;
+      const up = delta >= 0;
+      hudVal.textContent = "$" + last.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      hudDelta.textContent = (up ? "▲ +$" : "▼ −$") + Math.abs(delta).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      hudDelta.style.color = "#fff";
+      hudDelta.style.background = up ? "#3fb950" : "#f85149";
+    }
+  }
 }
 
 // ── escaping ───────────────────────────────────────────────────────────
@@ -945,23 +1114,19 @@ async function refresh() {
   const [
     claudePortfolio,
     claudePositionsResp,
-    claudeTrades,
-    claudeLog,
-    claudeStatus,
     weatherStats,
     weatherTrades,
     weatherEvents,
     weatherPositionsResp,
+    weatherReadiness,
   ] = await Promise.all([
     fetchJSON("/api/claude/portfolio"),
     fetchJSON("/api/claude/positions-detail"),
-    fetchJSON("/api/claude/trades?limit=20"),
-    fetchJSON("/api/claude/log?lines=80"),
-    fetchJSON("/api/claude/status"),
     fetchJSON("/api/weather/stats"),
     fetchJSON("/api/weather/trades?limit=50"),
     fetchJSON("/api/weather/events?limit=40"),
     fetchJSON("/api/weather/positions-detail"),
+    fetchJSON("/api/weather/readiness"),
   ]);
 
   const claudePositions = (claudePositionsResp?.positions) || claudePortfolio?.positions || [];
@@ -969,7 +1134,7 @@ async function refresh() {
 
   renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions);
   renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions);
-  renderClaude(claudePortfolio, claudePositions, claudeTrades, claudeLog, claudeStatus);
+  renderReadiness(weatherReadiness);
   await renderChart();
 
   document.getElementById("refresh-ts").textContent = fmtRefreshTs(new Date());
