@@ -32,7 +32,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # Paths — resolve relative to this file. ../data lives next to python/.
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
-DATA_DIR = REPO_ROOT / "data"
+# DATA_DIR = the Claude-bot state source. Env-overridable (DASHBOARD_DATA_DIR) so a
+# live-only instance can point at an EMPTY dir → claude/paper panels show nothing.
+DATA_DIR = Path(os.environ.get("DASHBOARD_DATA_DIR", str(REPO_ROOT / "data")))
 PORTFOLIO_PATH = DATA_DIR / "portfolio.json"
 TRADES_PATH = DATA_DIR / "trades.jsonl"
 LOG_PATH = DATA_DIR / "bot.log"
