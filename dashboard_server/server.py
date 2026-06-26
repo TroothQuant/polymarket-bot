@@ -462,6 +462,8 @@ def weather_readiness(since: str = G0_SINCE) -> JSONResponse:
     empty = {
         "cities": [],
         "total": {"n": 0, "wins": 0, "hit": 0.0, "pnl": 0.0},
+        "current_cash": None,
+        "reconcile": None,
         "gate": {},
         "since": since,
     }
@@ -477,6 +479,21 @@ def weather_readiness(since: str = G0_SINCE) -> JSONResponse:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         rows = [dict(r) for r in conn.execute(_READINESS_SQL, (since,))]
+        # current cash = real wallet balance the live bot syncs into bot_state;
+        # reconcile = live position-reconciliation status. Both live-only — the
+        # paper DB has no reconcile_status column, so degrade gracefully.
+        cash, recon = None, None
+        try:
+            br = conn.execute("SELECT bankroll, reconcile_status FROM bot_state LIMIT 1").fetchone()
+            if br is not None:
+                cash, recon = br["bankroll"], br["reconcile_status"]
+        except sqlite3.Error:
+            try:
+                br = conn.execute("SELECT bankroll FROM bot_state LIMIT 1").fetchone()
+                if br is not None:
+                    cash = br["bankroll"]
+            except sqlite3.Error:
+                pass
         conn.close()
     except sqlite3.Error as e:
         # Never 500 the dashboard — return empty with an error note.
@@ -524,8 +541,10 @@ def weather_readiness(since: str = G0_SINCE) -> JSONResponse:
         "total": {
             "n": total_n, "wins": total_wins,
             "hit": round(100.0 * total_wins / total_n, 1) if total_n else 0.0,
-            "pnl": total_pnl,
+            "pnl": total_pnl,  # REALIZED P&L from settled trade rows (NOT a wallet delta)
         },
+        "current_cash": round(cash, 2) if cash is not None else None,  # real wallet (live)
+        "reconcile": recon,                                            # live reconciliation status
         "gate": gate,
         "since": since,
     })
