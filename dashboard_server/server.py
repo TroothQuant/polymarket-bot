@@ -440,7 +440,13 @@ def claude_positions_detail() -> JSONResponse:
 # 'temperature-in-' and '-on-'. MUST be declared before the /{path:path} proxy
 # below so it isn't swallowed by the catch-all.
 
-_READINESS_SQL = """
+# When DASHBOARD_LIVE_ONLY is set (the Mac :8003 LIVE dashboard sets it), the
+# readiness scorecard counts ONLY real live fills (order_id NOT NULL) so paper
+# rows can never inflate the live view. Default OFF → the server :8001 PAPER
+# dashboard query is byte-identical to before (audit 5d, 2026-07-01).
+_DASHBOARD_LIVE_ONLY = os.environ.get("DASHBOARD_LIVE_ONLY", "").lower() in ("1", "true", "yes")
+_LIVE_ONLY_CLAUSE = "AND order_id IS NOT NULL" if _DASHBOARD_LIVE_ONLY else ""
+_READINESS_SQL = f"""
     SELECT
       substr(event_slug,
              instr(event_slug,'temperature-in-')+15,
@@ -451,6 +457,7 @@ _READINESS_SQL = """
     FROM trades
     WHERE market_type='weather' AND platform='polymarket'
       AND result IN ('win','loss')
+      {_LIVE_ONLY_CLAUSE}
       AND date(settlement_time) >= ?
     GROUP BY city
     ORDER BY pnl DESC
