@@ -182,6 +182,19 @@
   .wo-verdict.go { border-left-color: var(--green); background: var(--green-dim); }
   .wo-verdict .vtag { font-family: var(--mono); font-weight: 600; }
 
+  /* Paper-bot activity board */
+  .pa-body { padding: 4px 12px 10px; }
+  .pa-scroll { max-height: 340px; overflow-y: auto; }
+  .pa-body .row-table { width: 100%; }
+  .pa-dim { color: var(--fg-faint); font-family: var(--mono); font-size: 11px; }
+  .pa-win { color: var(--green); font-weight: 600; }
+  .pa-loss { color: var(--red); font-weight: 600; }
+  .pa-void { color: var(--fg-mute); }
+  .pa-bucket { font-family: var(--mono); font-size: 10px; color: #58a6ff;
+    background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35);
+    border-radius: 4px; padding: 1px 5px; margin-left: 5px; }
+  .pa-body .pos { color: var(--green); } .pa-body .neg { color: var(--red); } .pa-body .mute { color: var(--fg-mute); }
+
   .bot-summary {
     padding: 10px 16px;
     background: var(--bg-elev-2);
@@ -369,19 +382,21 @@
     </details>
   </div>
 
-  <!-- Weather Ops — Live Readiness (replaces the retired Claude column) -->
-  <div class="bot-column wo-panel">
+  <!-- Paper-bot activity board (replaces the retired G0 readiness HUD) -->
+  <div class="bot-column wo-panel pa-panel">
     <div class="wo-head">
       <span class="wo-sweep" aria-hidden="true"></span>
       <span class="wo-dot wo-live" aria-hidden="true"></span>
-      <h2>weather ops</h2>
-      <span class="wo-tag">// live-readiness</span>
-      <span class="wo-status" id="wo-status">paper · monitoring</span>
+      <h2>paper bot · activity</h2>
+      <span class="wo-tag">// server paper weather</span>
+      <span class="wo-status" id="pa-status">live</span>
     </div>
-    <div class="wo-gauges" id="wo-gauges"><div class="empty">loading…</div></div>
-    <div class="section-title">City scorecard <span class="count" id="wo-since">G0 · since 5/28</span></div>
-    <div class="wo-cities" id="wo-cities"><div class="empty">loading…</div></div>
-    <div class="wo-verdict" id="wo-verdict"></div>
+    <div class="section-title">Open Positions <span class="count" id="pa-pos-count"></span></div>
+    <div class="pa-body" id="pa-positions"><div class="empty">loading…</div></div>
+    <div class="section-title">Recent Trades <span class="count" id="pa-trades-count">last 50</span></div>
+    <div class="pa-body pa-scroll" id="pa-trades"><div class="empty">loading…</div></div>
+    <div class="section-title">Recent Events <span class="count" id="pa-events-count">last 50</span></div>
+    <div class="pa-body pa-scroll" id="pa-events"><div class="empty">loading…</div></div>
   </div>
 </main>
 
@@ -960,6 +975,101 @@ function renderReadiness(data) {
   });
 }
 
+// ── Paper-bot activity board (replaces the retired G0 readiness HUD) ────
+// Display-only. Data comes through the dashboard's /api/weather/* proxy to the
+// server paper weather bot on :8000. P&L is intentionally NOT tiled at the top —
+// the Realized tile with Bot/Platform chips remains the authoritative P&L view.
+function paSide(dir){ return (dir||"").toUpperCase()==="YES" ? "YES" : "NO"; }
+function paWhen(ts){ return ts ? new Date(ts).toLocaleString() : "—"; }
+function renderActivity(weatherTrades, weatherEvents, weatherPositions){
+  const posEl = document.getElementById("pa-positions");
+  const trEl  = document.getElementById("pa-trades");
+  const evEl  = document.getElementById("pa-events");
+  if (!posEl) return;
+  const posCount = document.getElementById("pa-pos-count");
+  const trCount  = document.getElementById("pa-trades-count");
+  const evCount  = document.getElementById("pa-events-count");
+
+  // 1) OPEN POSITIONS — every currently-open trade
+  const positions = Array.isArray(weatherPositions) ? weatherPositions
+    : (weatherTrades || []).filter(t => !t.settled).map(t => ({
+        id:t.id, market_ticker:t.market_ticker, event_slug:t.event_slug,
+        platform:t.platform, direction:t.direction, entry_price:t.entry_price,
+        size_usd:t.size, timestamp:t.timestamp }));
+  posCount.textContent = `(${positions.length})`;
+  if (!positions.length) {
+    posEl.innerHTML = '<div class="empty">no open positions</div>';
+  } else {
+    posEl.innerHTML = `<table class="row-table"><tr><th>#</th><th>Market</th><th>Plat</th><th>Side</th><th>Entry</th><th>Size</th><th>Opened</th></tr>` +
+      positions.map(p => {
+        const plat = (p.platform || "polymarket").toLowerCase();
+        const mkt = escapeHtml((p.event_slug || p.market_ticker || "?"));
+        const bucket = p.bucket_label ? `<span class="pa-bucket">${escapeHtml(p.bucket_label)}</span>` : "";
+        return `<tr>
+          <td>${p.id ?? "—"}</td>
+          <td>${mkt}${bucket}</td>
+          <td><span class="platform-badge ${plat}">${plat}</span></td>
+          <td><span class="side-badge ${paSide(p.direction)}">${paSide(p.direction)}</span></td>
+          <td>${(p.entry_price ?? 0).toFixed(3)}</td>
+          <td>${fmtUsd(p.size_usd ?? p.size ?? 0, 0)}</td>
+          <td class="pa-dim">${paWhen(p.timestamp)}</td>
+        </tr>`;
+      }).join("") + `</table>`;
+  }
+
+  // 2) RECENT TRADES — last 50 closed/settled, newest (by settle time) first
+  const settled = (weatherTrades || []).filter(t => t.settled)
+    .sort((a,b) => new Date(b.settlement_time || b.timestamp) - new Date(a.settlement_time || a.timestamp))
+    .slice(0, 50);
+  trCount.textContent = `${settled.length} shown`;
+  if (!settled.length) {
+    trEl.innerHTML = '<div class="empty">no settled trades yet</div>';
+  } else {
+    trEl.innerHTML = `<table class="row-table"><tr><th>#</th><th>Market</th><th>Plat</th><th>Side</th><th>Entry→Exit</th><th>Result</th><th>P&amp;L</th><th>Settled</th></tr>` +
+      settled.map(t => {
+        const plat = (t.platform || "polymarket").toLowerCase();
+        // settlement_value is the YES-side payout; show it from MY side.
+        let exit = "—";
+        if (t.settlement_value != null) {
+          const mine = paSide(t.direction) === "YES" ? t.settlement_value : 1 - t.settlement_value;
+          exit = mine.toFixed(2);
+        }
+        const res = t.result || "—";
+        const resClass = res === "win" ? "pa-win"
+          : (res === "loss" || res === "stop_loss") ? "pa-loss"
+          : res === "void" ? "pa-void" : "pa-dim";
+        const pnlClass = t.pnl > 0 ? "pos" : t.pnl < 0 ? "neg" : "mute";
+        const pnl = t.pnl != null ? fmtSigned(t.pnl) : "—";
+        return `<tr>
+          <td>${t.id ?? "—"}</td>
+          <td>${escapeHtml((t.event_slug || t.market_ticker || "?").slice(0, 44))}</td>
+          <td><span class="platform-badge ${plat}">${plat}</span></td>
+          <td><span class="side-badge ${paSide(t.direction)}">${paSide(t.direction)}</span></td>
+          <td>${(t.entry_price ?? 0).toFixed(3)} → ${exit}</td>
+          <td><span class="${resClass}">${escapeHtml(res.replace(/_/g, " "))}</span></td>
+          <td class="${pnlClass}">${pnl}</td>
+          <td class="pa-dim">${paWhen(t.settlement_time)}</td>
+        </tr>`;
+      }).join("") + `</table>`;
+  }
+
+  // 3) RECENT EVENTS — shared bot activity feed (scans, settlements, trades,
+  // warnings), newest first. In-memory ring buffer on the bot — refills after
+  // a restart. Includes BTC-strategy scan lines alongside weather activity.
+  const events = (weatherEvents || []).slice(-50).reverse();
+  evCount.textContent = `${events.length} shown`;
+  if (!events.length) {
+    evEl.innerHTML = '<div class="empty">no events</div>';
+  } else {
+    evEl.innerHTML = events.map(e => `
+      <div class="log-line">
+        <span class="ts">${e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "—"}</span>
+        <span class="level ${e.type || 'info'}">${escapeHtml(e.type || 'info')}</span>
+        ${escapeHtml(e.message || "")}
+      </div>`).join("");
+  }
+}
+
 // Downsample dense step-points to ~target buckets for a smooth DISPLAY curve.
 // Display-only — the HUD value/delta math always uses the full weatherPoints.
 function downsample(points, target){
@@ -1117,15 +1227,13 @@ async function refresh() {
     weatherTrades,
     weatherEvents,
     weatherPositionsResp,
-    weatherReadiness,
   ] = await Promise.all([
     fetchJSON("/api/claude/portfolio"),
     fetchJSON("/api/claude/positions-detail"),
     fetchJSON("/api/weather/stats"),
     fetchJSON("/api/weather/trades?limit=50"),
-    fetchJSON("/api/weather/events?limit=40"),
+    fetchJSON("/api/weather/events?limit=50"),
     fetchJSON("/api/weather/positions-enriched"),
-    fetchJSON("/api/weather/readiness"),
   ]);
 
   const claudePositions = (claudePositionsResp?.positions) || claudePortfolio?.positions || [];
@@ -1133,7 +1241,7 @@ async function refresh() {
 
   renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions);
   renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions);
-  renderReadiness(weatherReadiness);
+  renderActivity(weatherTrades, weatherEvents, weatherPositions);
   await renderChart();
 
   document.getElementById("refresh-ts").textContent = fmtRefreshTs(new Date());
