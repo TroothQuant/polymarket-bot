@@ -2,6 +2,10 @@
 
 Before any work that touches files in `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/`, read `~/Desktop/TROOTH/TROOTH - FINANCIAL/Polymarket/NAVIGATION.md` first. It documents the folder structure, the file-naming convention (`<type>_<YYYY-MM-DD>.md`, no `NN_` prefix on dated files), and where new files belong. Skipping this step is the failure mode that creates duplicate-prefix and orphan-file drift.
 
+**For "what is running where, in what mode, with what caps" read `STATE.md` in that folder FIRST** — the single source of truth for the live snapshot (hosts/IPs, services, live-vs-paper mode per bot, env flag values, caps, wallet/bankroll, dashboard URLs, git SHAs), every line dated. **🔒 IRON RULE: no deploy, flag-flip, cap change, or host move is COMPLETE until STATE.md is updated in the SAME session.** Reality wins over STATE.md; run `drift_check.py` to catch drift. (This rule exists because on 2026-07-09 a session reported "live status" off the wrong host — never infer live status from the paper server; the LIVE book runs on the MX box `216.238.67.12`.)
+
+> Fossil-condense IN PROGRESS (started 2026-07-09): dated "Operational notes/state" layers are being moved to `CLAUDE_ARCHIVE.md` (nothing deleted) so this file keeps durable rules + pointers to STATE.md / NAVIGATION. Until complete, the dated blocks below still stand.
+
 ---
 
 # Operating Principles (READ FIRST — overrides everything else in this file)
