@@ -909,18 +909,6 @@ function renderReadiness(data) {
   const g = data.gate, s = g.sample || {}, p = g.profit || {}, b = g.breadth || {};
   const t = data.total || {};
 
-  // Live: show current cash (real wallet, sig_type=3) + realized P&L (settled
-  // trades) as two SEPARATE numbers, plus any reconciliation flag. Paper: unchanged.
-  const statusEl = document.getElementById("wo-status");
-  if (statusEl) {
-    if (data.current_cash != null) {
-      const recon = (data.reconcile && data.reconcile !== "ok") ? ` · ${data.reconcile}` : "";
-      statusEl.textContent = `live · $${Number(data.current_cash).toFixed(2)} cash · realized ${woMoney(t.pnl)}${recon}`;
-    } else {
-      statusEl.textContent = "paper · monitoring";
-    }
-  }
-
   const sCol = s.pass ? green : yellow;
   const sCenter = `<text x="36" y="34" text-anchor="middle" style="fill:var(--fg);font-family:var(--mono);font-size:16px;">${s.n ?? 0}</text>`
     + `<text x="36" y="48" text-anchor="middle" style="fill:var(--fg-faint);font-family:var(--mono);font-size:10px;">/ ${s.target ?? 20}</text>`;
