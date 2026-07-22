@@ -1254,7 +1254,8 @@ function renderCrypto5050(sum, wins){
     <span>net <b>${c5Pnl(sum.cumulative_net)}</b></span>
     <span>locked ${c5Pnl(sum.locked_pnl_total)}</span>
     <span>lean ${c5Pnl(sum.lean_pnl_total)}</span>
-    <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)} · late60s ${hrf(hr.late_recency)}</span>
+    <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)} · late60s ${hrf(hr.late_recency)} · brown ${hrf(hr.brownian)}${sum.brownian_abstain_rate != null ? ` (abst ${(sum.brownian_abstain_rate * 100).toFixed(0)}%)` : ""}</span>
+    <span class="pa-dim">arb&lt;$1 (never traded): ${sum.arb ? `${sum.arb.total_hits}/${sum.arb.total_polls} polls · ${sum.arb.windows_with_hit} win(s) · best ${sum.arb.best_sum != null ? sum.arb.best_sum.toFixed(3) : "—"}` : "—"}</span>
   </div>`;
   if (!Array.isArray(wins) || !wins.length) {
     winEl.innerHTML = '<div class="empty">no windows yet</div>'; return;
