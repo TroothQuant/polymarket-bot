@@ -1279,10 +1279,12 @@ function renderCrypto5050(sum, wins){
           <td>${w.lean.price != null ? w.lean.price.toFixed(3) : "—"}</td>
           <td>${(w.lean.shares || 0).toFixed(0)}</td><td>—</td>
           <td>${c5Pnl(w.lean.pnl)}</td></tr>` : "";
+    const residue = w.l1_residue && w.l1_residue.shares > 0.01
+      ? ` · L1 residue ${w.l1_residue.shares.toFixed(0)} ${w.l1_residue.side.toUpperCase()}` : "";
     return `<div class="c5-win">
       <div class="c5-title">${escapeHtml(w.question || w.slug)} · ${escapeHtml(res)}
         · ${w.fills} fills (${w.maker_fills}M/${w.taker_fills}T)
-        · pair VWAP ${w.pair_vwap != null ? w.pair_vwap.toFixed(3) : "—"}
+        · pair VWAP ${w.pair_vwap != null ? w.pair_vwap.toFixed(3) : "—"}${residue}
         · NET ${c5Pnl(w.net_pnl)}</div>
       <table class="row-table">
         <tr><th>Side</th><th>Avg</th><th>Shares</th><th>Res</th><th>P&L</th></tr>
