@@ -1321,8 +1321,17 @@ function renderC5Postmortems(pms){
       <td><span class="pa-bucket">${escapeHtml(p.verdict || "?")}</span></td>
       <td>${c5Pnl(p.net_pnl)}</td>
       <td>${p.cf_balanced_delta != null ? c5Pnl(p.cf_balanced_delta) : "—"}</td>
-      <td><a href="/api/weather${p.md.replace("/api", "")}" target="_blank" class="pa-dim">md</a></td>
-    </tr>`).join("") + `</table>`;
+      <td><a href="#" class="pa-dim c5-pm-view" data-wid="${p.window_id}">view</a></td>
+    </tr><tr class="c5-pm-body" id="c5-pm-body-${p.window_id}" style="display:none"><td colspan="5"><pre style="white-space:pre-wrap;font-size:11px;margin:4px 0"></pre></td></tr>`).join("") + `</table>`;
+  el.querySelectorAll(".c5-pm-view").forEach(a => a.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    const wid = a.dataset.wid;
+    const rowEl = document.getElementById(`c5-pm-body-${wid}`);
+    if (rowEl.style.display !== "none") { rowEl.style.display = "none"; return; }
+    const d = await fetchJSON(`/api/weather/crypto5050/postmortem/${wid}`);
+    rowEl.querySelector("pre").textContent = (d && d.markdown) ? d.markdown : "unavailable";
+    rowEl.style.display = "";
+  }));
 }
 
 async function refresh() {
