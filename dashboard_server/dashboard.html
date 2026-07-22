@@ -423,6 +423,8 @@
     <div class="pa-body" id="c5-totals"><div class="empty">loading…</div></div>
     <div class="section-title">Recent Windows <span class="count" id="c5-win-count">last 5</span></div>
     <div class="pa-body pa-scroll" id="c5-windows"><div class="empty">loading…</div></div>
+    <div class="section-title">Loss Post-mortems <span class="count" id="c5-pm-count">auto</span></div>
+    <div class="pa-body pa-scroll" id="c5-postmortems"><div class="empty">loading…</div></div>
   </div>
 </main>
 
@@ -1257,6 +1259,7 @@ function renderCrypto5050(sum, wins){
     <span>lean ${c5Pnl(sum.lean_pnl_total)}</span>
     <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)} · late60s ${hrf(hr.late_recency)} · brown ${hrf(hr.brownian)}${sum.brownian_abstain_rate != null ? ` (abst ${(sum.brownian_abstain_rate * 100).toFixed(0)}%)` : ""}</span>
     <span class="pa-dim">arb&lt;$1 (never traded): ${sum.arb ? `${sum.arb.total_hits}/${sum.arb.total_polls} polls · ${sum.arb.windows_with_hit} win(s) · best ${sum.arb.best_sum != null ? sum.arb.best_sum.toFixed(3) : "—"}` : "—"}</span>
+    <span class="pa-dim">segments: ${sum.by_version ? `v1 ${sum.by_version.v1.windows}w ${c5Pnl(sum.by_version.v1.net)} · v2 ${sum.by_version.v2.windows}w ${c5Pnl(sum.by_version.v2.net)}` : "—"} · balanced-close would have saved ${sum.balanced_close_saved ? `$${sum.balanced_close_saved.amount.toFixed(2)} over ${sum.balanced_close_saved.n_losses} losses` : "—"}</span>
   </div>`;
   if (!Array.isArray(wins) || !wins.length) {
     winEl.innerHTML = '<div class="empty">no windows yet</div>'; return;
@@ -1306,6 +1309,22 @@ function renderCrypto5050(sum, wins){
   }).join("");
 }
 
+function renderC5Postmortems(pms){
+  const el = document.getElementById("c5-postmortems");
+  if (!el) return;
+  if (!Array.isArray(pms) || !pms.length) {
+    el.innerHTML = '<div class="empty">no losses yet</div>'; return;
+  }
+  el.innerHTML = `<table class="row-table"><tr><th>Window</th><th>Verdict</th><th>Net</th><th>Δbal</th><th></th></tr>` +
+    pms.map(p => `<tr>
+      <td>${escapeHtml((p.question || p.slug || "").replace("Bitcoin Up or Down - ", ""))}</td>
+      <td><span class="pa-bucket">${escapeHtml(p.verdict || "?")}</span></td>
+      <td>${c5Pnl(p.net_pnl)}</td>
+      <td>${p.cf_balanced_delta != null ? c5Pnl(p.cf_balanced_delta) : "—"}</td>
+      <td><a href="/api/weather${p.md.replace("/api", "")}" target="_blank" class="pa-dim">md</a></td>
+    </tr>`).join("") + `</table>`;
+}
+
 async function refresh() {
   const [
     claudePortfolio,
@@ -1322,9 +1341,10 @@ async function refresh() {
     fetchJSON("/api/weather/events?limit=50"),
     fetchJSON("/api/weather/positions-enriched"),
   ]);
-  const [c5Summary, c5Windows] = await Promise.all([
+  const [c5Summary, c5Windows, c5Pms] = await Promise.all([
     fetchJSON("/api/weather/crypto5050/summary"),
     fetchJSON("/api/weather/crypto5050/windows?limit=5"),
+    fetchJSON("/api/weather/crypto5050/postmortems?limit=8"),
   ]);
 
   const claudePositions = (claudePositionsResp?.positions) || claudePortfolio?.positions || [];
@@ -1334,6 +1354,7 @@ async function refresh() {
   renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions);
   renderActivity(weatherTrades, weatherEvents, weatherPositions);
   renderCrypto5050(c5Summary, c5Windows);
+  renderC5Postmortems(c5Pms);
   await renderChart();
 
   document.getElementById("refresh-ts").textContent = fmtRefreshTs(new Date());
