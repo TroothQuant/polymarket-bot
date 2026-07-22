@@ -234,6 +234,14 @@
   }
   .side-badge.NO { background: rgba(248,81,73,0.2); color: var(--red); }
   .side-badge.YES { background: rgba(63,185,80,0.2); color: var(--green); }
+  .side-badge.UP { background: rgba(63,185,80,0.2); color: var(--green); }
+  .side-badge.DOWN { background: rgba(248,81,73,0.2); color: var(--red); }
+  .c5-win { margin: 8px 0 14px; }
+  .c5-win .c5-title { font-size: 12px; color: var(--fg-dim, #8b949e); margin-bottom: 4px; }
+  .c5-net-pos { color: var(--green); font-weight: 600; }
+  .c5-net-neg { color: var(--red); font-weight: 600; }
+  .c5-kpis { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 12.5px; }
+  .c5-kpis b { font-size: 14px; }
   .trade-num {
     display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 600;
     color: var(--fg-faint); margin-right: 6px;
@@ -397,6 +405,24 @@
     <div class="pa-body pa-scroll" id="pa-trades"><div class="empty">loading…</div></div>
     <div class="section-title">Recent Events <span class="count" id="pa-events-count">last 50</span></div>
     <div class="pa-body pa-scroll" id="pa-events"><div class="empty">loading…</div></div>
+  </div>
+
+  <!-- CRYPTO5050 paper book (2026-07-22) — 5-min BTC Up/Down two-layer sim.
+       PAPER ONLY, separate ledger (crypto_windows), never the weather trades.
+       Maker-fill sim is optimistic (queue position unmodeled) — maker % below
+       doubles as the honesty meter. -->
+  <div class="bot-column wo-panel pa-panel">
+    <div class="wo-head">
+      <span class="wo-sweep" aria-hidden="true"></span>
+      <span class="wo-dot wo-live" aria-hidden="true"></span>
+      <h2>crypto 5-min (paper)</h2>
+      <span class="wo-tag">// btc up/down · two-layer 50-50</span>
+      <span class="wo-status" id="c5-status">off</span>
+    </div>
+    <div class="section-title">Module Totals</div>
+    <div class="pa-body" id="c5-totals"><div class="empty">loading…</div></div>
+    <div class="section-title">Recent Windows <span class="count" id="c5-win-count">last 5</span></div>
+    <div class="pa-body pa-scroll" id="c5-windows"><div class="empty">loading…</div></div>
   </div>
 </main>
 
@@ -1207,6 +1233,65 @@ function escapeHtml(s) {
 }
 
 // ── main refresh loop ──────────────────────────────────────────────────
+// ── CRYPTO5050 panel (2026-07-22) — Polymarket-positions-style window view ──
+function c5Pnl(v){ if (v == null) return "—";
+  const cls = v >= 0 ? "c5-net-pos" : "c5-net-neg";
+  return `<span class="${cls}">${v >= 0 ? "+" : ""}${v.toFixed(2)}</span>`; }
+function renderCrypto5050(sum, wins){
+  const tot = document.getElementById("c5-totals");
+  const winEl = document.getElementById("c5-windows");
+  if (!tot) return;
+  const st = document.getElementById("c5-status");
+  if (!sum) { tot.innerHTML = '<div class="empty">module endpoint unreachable</div>'; return; }
+  const halted = sum.enabled && sum.cumulative_net <= sum.halt_pnl_usd;
+  st.textContent = halted ? "HALTED" : (sum.enabled ? "live" : "off");
+  const hr = sum.hit_rates || {};
+  const hrf = (h) => h && h.n ? `${(h.rate * 100).toFixed(0)}% (n=${h.n})` : "—";
+  tot.innerHTML = `<div class="c5-kpis">
+    <span>windows <b>${sum.windows_settled}</b></span>
+    <span>pair&lt;$1 <b>${sum.pct_pair_vwap_sub_dollar != null ? (sum.pct_pair_vwap_sub_dollar * 100).toFixed(0) + "%" : "—"}</b></span>
+    <span>maker <b>${sum.maker_fill_pct != null ? (sum.maker_fill_pct * 100).toFixed(0) + "%" : "—"}</b> <span class="pa-dim">(honesty meter)</span></span>
+    <span>net <b>${c5Pnl(sum.cumulative_net)}</b></span>
+    <span>locked ${c5Pnl(sum.locked_pnl_total)}</span>
+    <span>lean ${c5Pnl(sum.lean_pnl_total)}</span>
+    <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)}</span>
+  </div>`;
+  if (!Array.isArray(wins) || !wins.length) {
+    winEl.innerHTML = '<div class="empty">no windows yet</div>'; return;
+  }
+  winEl.innerHTML = wins.map(w => {
+    const res = w.resolution ? w.resolution.toUpperCase() : (w.status || "open");
+    const rows = (w.sides || []).map(sd => {
+      const side = (sd.side || "").toUpperCase();
+      const resPx = sd.resolution_price;
+      const pnl = (resPx != null && sd.avg_price != null)
+        ? (sd.shares * (resPx - sd.avg_price)) : null;
+      return `<tr>
+        <td><span class="side-badge ${side}">${side}</span></td>
+        <td>${sd.avg_price != null ? sd.avg_price.toFixed(3) : "—"}</td>
+        <td>${(sd.shares || 0).toFixed(0)}</td>
+        <td>${resPx != null ? resPx.toFixed(2) : "—"}</td>
+        <td>${c5Pnl(pnl)}</td>
+      </tr>`;
+    }).join("");
+    const lean = w.lean && w.lean.side
+      ? `<tr><td><span class="side-badge ${w.lean.side.toUpperCase()}">LEAN ${w.lean.side.toUpperCase()}</span></td>
+          <td>${w.lean.price != null ? w.lean.price.toFixed(3) : "—"}</td>
+          <td>${(w.lean.shares || 0).toFixed(0)}</td><td>—</td>
+          <td>${c5Pnl(w.lean.pnl)}</td></tr>` : "";
+    return `<div class="c5-win">
+      <div class="c5-title">${escapeHtml(w.question || w.slug)} · ${escapeHtml(res)}
+        · ${w.fills} fills (${w.maker_fills}M/${w.taker_fills}T)
+        · pair VWAP ${w.pair_vwap != null ? w.pair_vwap.toFixed(3) : "—"}
+        · NET ${c5Pnl(w.net_pnl)}</div>
+      <table class="row-table">
+        <tr><th>Side</th><th>Avg</th><th>Shares</th><th>Res</th><th>P&L</th></tr>
+        ${rows}${lean}
+      </table>
+    </div>`;
+  }).join("");
+}
+
 async function refresh() {
   const [
     claudePortfolio,
@@ -1223,6 +1308,10 @@ async function refresh() {
     fetchJSON("/api/weather/events?limit=50"),
     fetchJSON("/api/weather/positions-enriched"),
   ]);
+  const [c5Summary, c5Windows] = await Promise.all([
+    fetchJSON("/api/weather/crypto5050/summary"),
+    fetchJSON("/api/weather/crypto5050/windows?limit=5"),
+  ]);
 
   const claudePositions = (claudePositionsResp?.positions) || claudePortfolio?.positions || [];
   const weatherPositions = (weatherPositionsResp?.positions) || null;
@@ -1230,6 +1319,7 @@ async function refresh() {
   renderKPI(claudePortfolio, weatherStats, claudePositions, weatherPositions);
   renderWeather(weatherStats, weatherTrades, weatherEvents, weatherPositions);
   renderActivity(weatherTrades, weatherEvents, weatherPositions);
+  renderCrypto5050(c5Summary, c5Windows);
   await renderChart();
 
   document.getElementById("refresh-ts").textContent = fmtRefreshTs(new Date());
