@@ -1254,7 +1254,7 @@ function renderCrypto5050(sum, wins){
     <span>net <b>${c5Pnl(sum.cumulative_net)}</b></span>
     <span>locked ${c5Pnl(sum.locked_pnl_total)}</span>
     <span>lean ${c5Pnl(sum.lean_pnl_total)}</span>
-    <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)}</span>
+    <span class="pa-dim">leans: spot ${hrf(hr.spot_drift)} · mom ${hrf(hr.momentum)} · depth ${hrf(hr.depth)} · late60s ${hrf(hr.late_recency)}</span>
   </div>`;
   if (!Array.isArray(wins) || !wins.length) {
     winEl.innerHTML = '<div class="empty">no windows yet</div>'; return;
