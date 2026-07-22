@@ -1243,8 +1243,9 @@ function renderCrypto5050(sum, wins){
   if (!tot) return;
   const st = document.getElementById("c5-status");
   if (!sum) { tot.innerHTML = '<div class="empty">module endpoint unreachable</div>'; return; }
-  const halted = sum.enabled && sum.cumulative_net <= sum.halt_pnl_usd;
-  st.textContent = halted ? "HALTED" : (sum.enabled ? "live" : "off");
+  const exhausted = sum.enabled && sum.allocation_available != null
+    && sum.window_cap_usd != null && sum.allocation_available < sum.window_cap_usd;
+  st.textContent = exhausted ? "EXHAUSTED" : (sum.enabled ? "live" : "off");
   const hr = sum.hit_rates || {};
   const hrf = (h) => h && h.n ? `${(h.rate * 100).toFixed(0)}% (n=${h.n})` : "—";
   tot.innerHTML = `<div class="c5-kpis">
