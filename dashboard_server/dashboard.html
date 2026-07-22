@@ -1266,21 +1266,31 @@ function renderCrypto5050(sum, wins){
     const rows = (w.sides || []).map(sd => {
       const side = (sd.side || "").toUpperCase();
       const resPx = sd.resolution_price;
-      const pnl = (resPx != null && sd.avg_price != null)
-        ? (sd.shares * (resPx - sd.avg_price)) : null;
+      // settled → realized vs resolution price; open → UNREALIZED vs live mark
+      const px = resPx != null ? resPx : sd.mark;
+      const pnl = (px != null && sd.avg_price != null && sd.shares > 0)
+        ? (sd.shares * (px - sd.avg_price)) : null;
+      const pxCell = resPx != null ? resPx.toFixed(2)
+        : (sd.mark != null ? `<span class="pa-dim">${sd.mark.toFixed(2)}~</span>` : "—");
       return `<tr>
         <td><span class="side-badge ${side}">${side}</span></td>
         <td>${sd.avg_price != null ? sd.avg_price.toFixed(3) : "—"}</td>
         <td>${(sd.shares || 0).toFixed(0)}</td>
-        <td>${resPx != null ? resPx.toFixed(2) : "—"}</td>
-        <td>${c5Pnl(pnl)}</td>
+        <td>${pxCell}</td>
+        <td>${c5Pnl(pnl)}${resPx == null && pnl != null ? '<span class="pa-dim">~</span>' : ""}</td>
       </tr>`;
     }).join("");
+    const leanPnl = w.lean && w.lean.side
+      ? (w.lean.pnl != null ? w.lean.pnl
+         : (w.lean.mark != null && w.lean.price != null
+            ? w.lean.shares * (w.lean.mark - w.lean.price) : null))
+      : null;
     const lean = w.lean && w.lean.side
       ? `<tr><td><span class="side-badge ${w.lean.side.toUpperCase()}">LEAN ${w.lean.side.toUpperCase()}</span></td>
           <td>${w.lean.price != null ? w.lean.price.toFixed(3) : "—"}</td>
-          <td>${(w.lean.shares || 0).toFixed(0)}</td><td>—</td>
-          <td>${c5Pnl(w.lean.pnl)}</td></tr>` : "";
+          <td>${(w.lean.shares || 0).toFixed(0)}</td>
+          <td>${w.lean.pnl != null ? "" : (w.lean.mark != null ? `<span class="pa-dim">${w.lean.mark.toFixed(2)}~</span>` : "—")}</td>
+          <td>${c5Pnl(leanPnl)}${w.lean.pnl == null && leanPnl != null ? '<span class="pa-dim">~</span>' : ""}</td></tr>` : "";
     const residue = w.l1_residue && w.l1_residue.shares > 0.01
       ? ` · L1 residue ${w.l1_residue.shares.toFixed(0)} ${w.l1_residue.side.toUpperCase()}` : "";
     return `<div class="c5-win">
